@@ -1,0 +1,4 @@
+فایل‌های داخل این پوشه را در GitHub Repository زائرسرا از Add file > Upload files آپلود کنید و Commit changes را بزنید.
+مسیر پوشه‌ها باید حفظ شود. فایل‌های هم‌نام نسخه قبلی Replace می‌شوند.
+بعد از Commit، Actions به‌طور خودکار Build را شروع می‌کند.
+سپس backend/migration_v0_2.sql را یک‌بار در Supabase SQL Editor اجرا کنید.

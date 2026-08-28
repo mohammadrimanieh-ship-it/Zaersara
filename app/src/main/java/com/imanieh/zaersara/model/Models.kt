@@ -10,6 +10,14 @@ data class Person(
     val phone: String = ""
 )
 
+data class PersonLookup(
+    val firstName: String,
+    val lastName: String,
+    val nationalId: String,
+    val visitCount: Int = 0,
+    val lastDeparture: String = ""
+)
+
 data class Reservation(
     val id: String = "",
     val title: String,
