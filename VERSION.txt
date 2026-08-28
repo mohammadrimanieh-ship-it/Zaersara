@@ -1,0 +1,5 @@
+Zaersara Mashhad Android
+Version: 0.1.0
+VersionCode: 1
+ApplicationId: com.imanieh.zaersara
+Build: GitHub Actions / Debug APK
