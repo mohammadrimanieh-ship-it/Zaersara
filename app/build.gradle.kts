@@ -16,8 +16,22 @@ android {
         versionName = "0.1.0"
     }
 
-    buildFeatures { compose = true }
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    buildFeatures {
+        compose = true
+    }
+
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 }
 
 dependencies {
@@ -29,5 +43,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("androidx.navigation:navigation-compose:2.8.3")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
