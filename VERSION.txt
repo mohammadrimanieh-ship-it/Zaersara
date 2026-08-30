@@ -1,12 +1,1 @@
-Zaersara Mashhad 0.2.0
-versionCode=2
-
-Changes:
-- Persian (Jalali) reservation date picker
-- Past dates disabled
-- Multiple guests per reservation
-- Mandatory 10-digit national ID per guest
-- Auto-fill known guest name by national ID
-- Capacity enforcement per unit (5/6/14)
-- Clear validation message when reservation cannot be saved
-- Version prepared for future updates
+0.3.1
