@@ -190,14 +190,14 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
             if (searched) {
                 item { StepHeader("۲", "انتخاب پیشنهاد", if (suggestions.isEmpty()) "برای این بازه ظرفیت مناسبی پیدا نشد." else "ترکیب بین مجموعه‌های مختلف انجام نمی‌شود.") }
                 if (suggestions.isEmpty()) item { EmptyCard("هیچ واحد یا ترکیب خالی با ظرفیت کافی پیدا نشد. تاریخ یا تعداد نفرات را تغییر دهید.") }
-                itemsIndexed(suggestions) { index, s -> SuggestionCard(s, selected == s, { selected = s }, index == 0) }
+                itemsIndexed(suggestions) { index: Int, s: UnitSuggestion -> SuggestionCard(s, selected == s, { selected = s }, index == 0) }
             }
             if (selected != null) {
                 item { StepHeader("۳", "مشخصات رزرو و زائران", "کد ملی اختیاری است و اعداد فارسی هم پذیرفته می‌شوند.") }
                 item { OutlinedTextField(title, { title = it }, label = { Text("عنوان / نام خانواده یا کاروان") }, modifier = Modifier.fillMaxWidth()) }
                 if (caravan) item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(leader, { leader = it }, label = { Text("نام سرپرست") }, modifier = Modifier.fillMaxWidth()); OutlinedTextField(phone, { phone = normalizeNumeric(it, 11) }, label = { Text("شماره تماس سرپرست") }, modifier = Modifier.fillMaxWidth()) } }
                 item { Text("زائران ${guests.size} از $people", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-                itemsIndexed(guests) { index, g -> GuestCard(g) { guests = guests.toMutableList().also { it.removeAt(index) } } }
+                itemsIndexed(guests) { index: Int, g: GuestInput -> GuestCard(g) { guests = guests.toMutableList().also { list -> list.removeAt(index) } } }
                 if (guests.size < people) item {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))) {
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -258,11 +258,16 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
     var showFrom by remember { mutableStateOf(false) }
     var showTo by remember { mutableStateOf(false) }
     var group by remember { mutableStateOf("all") }
-    val filtered = rs.filter { r ->
-        val s = runCatching { LocalDate.parse(r.startDate) }.getOrNull() ?: return@filter false
-        val e = runCatching { LocalDate.parse(r.endDate) }.getOrNull() ?: return@filter false
-        val timeOk = (from == null || e.isAfter(from)) && (to == null || !s.isAfter(to))
-        val groupOk = group == "all" || r.unitGroup == group
+    val fromDate: LocalDate? = from
+    val toDate: LocalDate? = to
+    val selectedGroup: String = group
+    val filtered: List<Reservation> = rs.filter { r: Reservation ->
+        val s: LocalDate = runCatching { LocalDate.parse(r.startDate) }.getOrNull() ?: return@filter false
+        val e: LocalDate = runCatching { LocalDate.parse(r.endDate) }.getOrNull() ?: return@filter false
+        val timeOk: Boolean =
+            (fromDate == null || e.isAfter(fromDate)) &&
+            (toDate == null || !s.isAfter(toDate))
+        val groupOk: Boolean = selectedGroup == "all" || r.unitGroup == selectedGroup
         timeOk && groupOk
     }
     val guests = filtered.sumOf { it.guestCount }
@@ -281,7 +286,28 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
             item { Text("گزارش مکانی", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             val rows = units.map { u -> u to filtered.filter { it.unitId == u.id } }.filter { it.second.isNotEmpty() }
             if (rows.isEmpty()) item { EmptyCard("در این بازه گزارشی وجود ندارد.") }
-            items(rows) { (u, list) -> Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(14.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Column { Text(u.name, fontWeight = FontWeight.Bold); Text("${list.size} رزرو • ${list.sumOf { it.guestCount }} نفر", style = MaterialTheme.typography.bodySmall) }; Text("${formatMoney(list.filter { it.isPaid }.sumOf { it.amount })} تومان", color = MaterialTheme.colorScheme.primary) } } }
+            items(rows) { row: Pair<UnitItem, List<Reservation>> ->
+                val u: UnitItem = row.first
+                val unitReservations: List<Reservation> = row.second
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.padding(14.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(u.name, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${unitReservations.size} رزرو • ${unitReservations.sumOf { reservation: Reservation -> reservation.guestCount }} نفر",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Text(
+                            "${formatMoney(unitReservations.filter { reservation: Reservation -> reservation.isPaid }.sumOf { reservation: Reservation -> reservation.amount })} تومان",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
     }
     if (showFrom) PersianDateDialog(from ?: LocalDate.now(), LocalDate.of(2020, 1, 1), "از تاریخ", { showFrom = false }) { from = it; showFrom = false }
@@ -294,7 +320,7 @@ fun UnitsScreen(vm: AppViewModel, onBack: () -> Unit) {
     Scaffold(topBar = { TopAppBar(title = { Text("واحدها", fontWeight = FontWeight.Bold) }, navigationIcon = { TextButton(onClick = onBack) { Text("بازگشت") } }) }) { p ->
         LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
             item { InfoCard("ظرفیت واحدها", "فاطمیه‌ها بر اساس تعداد تخت ظرفیت دارند. آپارتمان طبقه دوم و آپارتمان زیرزمین محدودیت تعداد نفر ندارند.") }
-            items(units) { u -> UnitEditCard(u) { vm.updateUnitCapacity(u.id, it) } }
+            items(units) { u: UnitItem -> UnitEditCard(u) { capacity: Int -> vm.updateUnitCapacity(u.id, capacity) } }
         }
     }
 }
