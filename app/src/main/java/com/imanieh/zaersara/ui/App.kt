@@ -318,7 +318,7 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
     var searched by remember { mutableStateOf(false) }; var selected by remember { mutableStateOf<UnitSuggestion?>(null) }; var stage by remember { mutableIntStateOf(1) }
     var title by remember { mutableStateOf("") }; var leader by remember { mutableStateOf("") }; var phone by remember { mutableStateOf("") }
     var paid by remember { mutableStateOf(false) }; var paymentStatus by remember { mutableStateOf("پرداخت شده") }; var amount by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }
-    var familyNames by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var allocationTexts by remember { mutableStateOf<Map<String,String>>(emptyMap()) }
+    var familyNames by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var allocationTexts by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var unitGuests by remember { mutableStateOf<Map<String,List<GuestInput>>>(emptyMap()) }
     val people = peopleText.toIntOrNull() ?: 0
     val dateOk = startDate != null && endDate != null && endDate!!.isAfter(startDate!!)
     val suggestions = remember(startDate,endDate,people,caravan,searched,units,rs) { if (searched && dateOk && people>0) vm.suggestions(startDate!!,endDate!!,people,caravan) else emptyList() }
@@ -366,6 +366,17 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                             Text(u.name, fontWeight=FontWeight.Bold, color=PurpleSoft)
                             OutlinedTextField(familyNames[u.id].orEmpty(), { v -> familyNames=familyNames.toMutableMap().also{it[u.id]=v} }, label={Text("نام خانوادگی اصلی")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
                             OutlinedTextField(allocationTexts[u.id].orEmpty(), { v -> allocationTexts=allocationTexts.toMutableMap().also{it[u.id]=normalizeNumeric(v,3)} }, label={Text("تعداد نفرات")}, supportingText={Text(if(maxCap==null) "بدون محدودیت ظرفیت" else "ظرفیت واحد: $maxCap نفر")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
+                            Text("مشخصات افراد (اختیاری)", color=PurpleSoft, fontWeight=FontWeight.Bold)
+                            (unitGuests[u.id] ?: emptyList()).forEachIndexed { gi, g ->
+                                Card(colors=CardDefaults.cardColors(containerColor=Navy), shape=RoundedCornerShape(14.dp)) { Column(Modifier.padding(10.dp), verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                                    OutlinedTextField(g.firstName,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(firstName=v)}}},label={Text(if(gi==0) "نام نفر اصلی" else "نام همراه")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                                    OutlinedTextField(g.lastName,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(lastName=v)}}},label={Text("نام خانوادگی")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                                    OutlinedTextField(g.nationalId,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(nationalId=normalizeNumeric(v,10))}}},label={Text("کد ملی (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                                    OutlinedTextField(g.phone,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(phone=normalizeNumeric(v,11))}}},label={Text("موبایل (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                                    TextButton(onClick={unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it.removeAt(gi)}}}){Text("حذف این فرد",color=Pink)}
+                                } }
+                            }
+                            OutlinedButton(onClick={ val ln=familyNames[u.id].orEmpty(); unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()) + GuestInput("",ln,"","")} }, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.PersonAdd,null); Spacer(Modifier.width(6.dp)); Text(if((unitGuests[u.id]?.isEmpty()!=false)) "ثبت مشخصات نفر اصلی" else "افزودن فرد همراه") }
                         }
                     }
                 }
@@ -375,7 +386,7 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                 if (paid) item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedTextField(amount,{amount=normalizeNumeric(it)},label={Text("مبلغ کل (تومان)")},modifier=Modifier.fillMaxWidth(),singleLine=true); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { FilterChip(selected=paymentStatus=="پرداخت شده",onClick={paymentStatus="پرداخت شده"},label={Text("پرداخت شده")}); FilterChip(selected=paymentStatus=="بدهکار",onClick={paymentStatus="بدهکار"},label={Text("بدهکار")}) } } }
                 item { OutlinedTextField(notes,{notes=it},label={Text("توضیحات")},modifier=Modifier.fillMaxWidth(),minLines=2) }
                 val s=selected!!
-                val plan=s.units.map { u -> PlanUnit(u.id, allocationTexts[u.id]?.toIntOrNull() ?: 0, familyNames[u.id].orEmpty().trim()) }
+                val plan=s.units.map { u -> PlanUnit(u.id, allocationTexts[u.id]?.toIntOrNull() ?: 0, familyNames[u.id].orEmpty().trim(), unitGuests[u.id] ?: emptyList()) }
                 val namesOk=plan.all{it.familyLastName.isNotBlank()}; val countsOk=plan.all { p0 -> p0.guestCount>0 && (s.units.first{it.id==p0.unitId}.unitGroup=="apartment" || p0.guestCount<=s.units.first{it.id==p0.unitId}.capacity) }
                 val totalOk=plan.sumOf{it.guestCount}==people; val amountOk=!paid || (amount.toLongOrNull()?:0)>0
                 item {
@@ -577,35 +588,9 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
 fun UnitsScreen(vm: AppViewModel, onBack: () -> Unit) {
     val units by vm.units.collectAsState()
     Scaffold(containerColor = Navy, topBar = { DarkTopBar("واحدها", onBack) }) { p ->
-        LazyColumn(
-            Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(bottom = 24.dp)
-        ) {
-            item { InfoCard("ظرفیت واحدها", "فاطمیه‌ها بر اساس تخت ظرفیت دارند؛ آپارتمان‌ها محدودیت تعداد نفر ندارند. هر واحد در هر بازه فقط به یک خانواده اختصاص دارد.") }
-            items(units) { u -> UnitEditCard(u) { vm.updateUnitCapacity(u.id, it) } }
-        }
-    }
-}
-
-@Composable
-private fun UnitEditCard(u: UnitItem, onSave: (Int) -> Unit) {
-    var edit by remember(u.id, u.capacity) { mutableStateOf(u.capacity.toString()) }
-    Card(colors = CardDefaults.cardColors(containerColor = NavyCard), shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(u.name, fontWeight = FontWeight.Bold)
-                Text(groupName(u.unitGroup), color = PurpleSoft)
-            }
-            if (u.unitGroup == "apartment") {
-                Text("بدون محدودیت تعداد نفر", color = Mint)
-            } else {
-                Text("ظرفیت فعلی: ${u.capacity} نفر", color = TextMuted)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(edit, { edit = normalizeNumeric(it, 2) }, label = { Text("ظرفیت") }, modifier = Modifier.weight(1f), singleLine = true)
-                    Button(onClick = { onSave(edit.toInt()) }, enabled = (edit.toIntOrNull() ?: 0) > 0) { Text("ذخیره") }
-                }
-            }
+        LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+            item { InfoCard("واحدها", "ظرفیت‌ها ثابت و فقط نمایشی هستند. آپارتمان‌ها محدودیت تعداد نفر ندارند.") }
+            items(units) { u -> Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(20.dp)){ Row(Modifier.fillMaxWidth().padding(16.dp),horizontalArrangement=Arrangement.SpaceBetween){ Column{Text(u.name,fontWeight=FontWeight.Bold);Text(groupName(u.unitGroup),color=PurpleSoft)}; Text(if(u.unitGroup=="apartment") "بدون محدودیت" else "${u.capacity} نفر",color=Mint,fontWeight=FontWeight.Bold) } } }
         }
     }
 }

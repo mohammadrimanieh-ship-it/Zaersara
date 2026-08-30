@@ -36,7 +36,8 @@ class Repository(private val api: SupabaseRest) {
     fun createBooking(title: String, startDate: String, endDate: String, reservationType: String, leaderName: String, leaderPhone: String,
                       isPaid: Boolean, amount: Long, paymentStatus: String, notes: String, plan: List<PlanUnit>, guests: List<GuestInput>) {
         val units = JSONArray(); plan.forEach {
-            units.put(JSONObject().put("unit_id", it.unitId).put("guest_count", it.guestCount).put("family_last_name", it.familyLastName))
+            val ug = JSONArray(); it.guests.forEach { g -> ug.put(JSONObject().put("first_name", g.firstName).put("last_name", g.lastName).put("national_id", g.nationalId.ifBlank { JSONObject.NULL }).put("phone", g.phone)) }
+            units.put(JSONObject().put("unit_id", it.unitId).put("guest_count", it.guestCount).put("family_last_name", it.familyLastName).put("guests", ug))
         }
         val ga = JSONArray(); guests.forEach {
             ga.put(JSONObject().put("first_name", it.firstName).put("last_name", it.lastName)

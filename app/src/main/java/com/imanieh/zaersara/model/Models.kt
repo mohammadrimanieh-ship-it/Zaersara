@@ -40,7 +40,7 @@ data class Reservation(
 )
 
 data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "", val phone: String = "")
-data class PlanUnit(val unitId: String, val guestCount: Int, val familyLastName: String = "")
+data class PlanUnit(val unitId: String, val guestCount: Int, val familyLastName: String = "", val guests: List<GuestInput> = emptyList())
 
 data class UnitSuggestion(
     val group: String,
