@@ -48,6 +48,14 @@ class SupabaseRest(private val prefs: AppPrefs) {
         } else if (txt.startsWith("{")) JSONObject(txt) else JSONObject()
     }
 
+    fun patch(path: String, body: JSONObject) {
+        val c = connection(path, "PATCH")
+        c.doOutput = true
+        c.setRequestProperty("Prefer", "return=minimal")
+        c.outputStream.use { it.write(body.toString().toByteArray()) }
+        response(c)
+    }
+
     fun postArray(path: String, body: JSONArray) {
         val c = connection(path, "POST")
         c.doOutput = true

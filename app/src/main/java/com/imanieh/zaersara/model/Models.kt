@@ -1,13 +1,12 @@
 package com.imanieh.zaersara.model
 
-data class UnitItem(val id: String, val name: String, val capacity: Int, val kind: String)
-
-data class Person(
-    val id: String = "",
-    val firstName: String,
-    val lastName: String,
-    val nationalId: String,
-    val phone: String = ""
+data class UnitItem(
+    val id: String,
+    val name: String,
+    val capacity: Int,
+    val kind: String,
+    val unitGroup: String = "original",
+    val capacityConfigured: Boolean = true
 )
 
 data class PersonLookup(
@@ -20,9 +19,11 @@ data class PersonLookup(
 
 data class Reservation(
     val id: String = "",
+    val bookingGroupId: String = "",
     val title: String,
     val unitId: String,
     val unitName: String = "",
+    val unitGroup: String = "",
     val startDate: String,
     val endDate: String,
     val guestCount: Int,
@@ -35,4 +36,15 @@ data class Reservation(
     val notes: String = ""
 )
 
-data class GuestInput(val firstName: String, val lastName: String, val nationalId: String)
+data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "")
+
+data class PlanUnit(val unitId: String, val guestCount: Int)
+
+data class UnitSuggestion(
+    val group: String,
+    val units: List<UnitItem>,
+    val allocations: List<Int>,
+    val spareCapacity: Int
+) {
+    val totalCapacity: Int get() = units.sumOf { it.capacity }
+}
