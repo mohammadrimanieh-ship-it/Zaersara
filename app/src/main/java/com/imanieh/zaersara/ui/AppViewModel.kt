@@ -48,9 +48,10 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
         }
     }
 
-    fun isUnitFree(unitId: String, start: LocalDate, end: LocalDate): Boolean = _reservations.value.none { r ->
-        if (r.unitId != unitId) false else {
-            val rs = runCatching { LocalDate.parse(r.startDate) }.getOrNull(); val re = runCatching { LocalDate.parse(r.endDate) }.getOrNull()
+    fun isUnitFree(unitId: String, start: LocalDate, end: LocalDate, excludeReservationId: String? = null): Boolean = _reservations.value.none { r ->
+        if (r.unitId != unitId || r.id == excludeReservationId) false else {
+            val rs = runCatching { LocalDate.parse(r.startDate) }.getOrNull()
+            val re = runCatching { LocalDate.parse(r.endDate) }.getOrNull()
             rs != null && re != null && start.isBefore(re) && end.isAfter(rs)
         }
     }
@@ -60,29 +61,84 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
         val available = _units.value.filter { u -> isUnitFree(u.id, start, end) && (u.unitGroup == "apartment" || (u.capacityConfigured && u.capacity > 0)) }
         val out = mutableListOf<UnitSuggestion>()
         for ((group, groupUnits) in available.groupBy { it.unitGroup }) {
-            if (group == "apartment") { groupUnits.take(3).forEach { out += UnitSuggestion(group, listOf(it), listOf(people), 0) }; continue }
+            if (group == "apartment") {
+                groupUnits.forEach { out += UnitSuggestion(group, listOf(it), listOf(people), 0) }
+                continue
+            }
             if (!caravan) {
-                groupUnits.filter { it.capacity >= people }.sortedWith(compareBy<UnitItem> { it.capacity - people }.thenBy { it.capacity }).take(3)
+                groupUnits.filter { it.capacity >= people }
+                    .sortedWith(compareBy<UnitItem> { it.capacity - people }.thenBy { it.capacity })
+                    .take(3)
                     .forEach { out += UnitSuggestion(group, listOf(it), listOf(people), it.capacity - people) }
             } else {
-                val sorted = groupUnits.sortedBy { it.capacity }; val combos = mutableListOf<List<UnitItem>>()
+                val sorted = groupUnits.sortedByDescending { it.capacity }
+                val combos = mutableListOf<List<UnitItem>>()
                 fun walk(index: Int, chosen: MutableList<UnitItem>) {
                     if (chosen.isNotEmpty() && chosen.sumOf { it.capacity } >= people) { combos += chosen.toList(); return }
-                    for (i in index until sorted.size) { chosen += sorted[i]; walk(i + 1, chosen); chosen.removeAt(chosen.lastIndex) }
+                    for (i in index until sorted.size) {
+                        chosen += sorted[i]; walk(i + 1, chosen); chosen.removeAt(chosen.lastIndex)
+                    }
                 }
                 walk(0, mutableListOf())
-                combos.distinctBy { it.map(UnitItem::id).sorted().joinToString() }.sortedWith(compareBy<List<UnitItem>> { it.sumOf(UnitItem::capacity) - people }.thenBy { it.size }).take(3)
-                    .forEach { combo -> var remaining = people; val allocations = combo.map { u -> minOf(u.capacity, remaining).also { remaining -= it } }; out += UnitSuggestion(group, combo, allocations, combo.sumOf { it.capacity } - people) }
+                combos.distinctBy { it.map(UnitItem::id).sorted().joinToString() }
+                    .sortedWith(compareBy<List<UnitItem>> { it.sumOf(UnitItem::capacity) - people }.thenBy { it.size })
+                    .take(3)
+                    .forEach { combo ->
+                        var remaining = people
+                        val allocations = combo.map { u -> minOf(u.capacity, remaining).also { remaining -= it } }
+                        out += UnitSuggestion(group, combo, allocations, combo.sumOf { it.capacity } - people)
+                    }
             }
         }
-        return out.sortedWith(compareBy<UnitSuggestion> { it.spareCapacity }.thenBy { it.units.size })
+        val priority = mapOf("original" to 0, "fatemiyeh" to 1, "apartment" to 2)
+        return out.sortedWith(compareBy<UnitSuggestion> { priority[it.group] ?: 9 }.thenBy { it.spareCapacity }.thenBy { it.units.size })
+    }
+
+    fun availableCapacityByGroup(start: LocalDate, end: LocalDate): Map<String, Int?> {
+        val free = _units.value.filter { isUnitFree(it.id, start, end) }
+        return mapOf(
+            "original" to free.filter { it.unitGroup == "original" }.sumOf { it.capacity },
+            "fatemiyeh" to free.filter { it.unitGroup == "fatemiyeh" }.sumOf { it.capacity },
+            "apartment" to if (free.any { it.unitGroup == "apartment" }) null else 0
+        )
     }
 
     fun createBooking(title: String, startDate: String, endDate: String, reservationType: String, leaderName: String, leaderPhone: String,
-                      isPaid: Boolean, amount: Long, paymentStatus: String, notes: String, plan: List<PlanUnit>, guests: List<GuestInput>, onOk: () -> Unit) = viewModelScope.launch(Dispatchers.IO) {
+                      isPaid: Boolean, amount: Long, paymentStatus: String, notes: String, plan: List<PlanUnit>, guests: List<GuestInput> = emptyList(), onOk: () -> Unit) = viewModelScope.launch(Dispatchers.IO) {
         runCatching { _busy.value = true; repo().createBooking(title,startDate,endDate,reservationType,leaderName,leaderPhone,isPaid,amount,paymentStatus,notes,plan,guests) }
             .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
-            .onFailure { _busy.value = false; if (it is SessionExpiredException) { _sessionExpired.value = true; _serverState.value = "auth" } else _message.value = it.message }
+            .onFailure { handleFailure(it) }
+    }
+
+    fun updateBookingMeta(groupId: String, title: String, startDate: String, endDate: String, leaderName: String, leaderPhone: String,
+                          isPaid: Boolean, amount: Long, paymentStatus: String, notes: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().updateBookingMeta(groupId,title,startDate,endDate,leaderName,leaderPhone,isPaid,amount,paymentStatus,notes) }
+            .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
+    }
+
+    fun updateBookingUnit(reservationId: String, unitId: String, guestCount: Int, familyLastName: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().updateBookingUnit(reservationId,unitId,guestCount,familyLastName) }
+            .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
+    }
+
+    fun addBookingUnit(groupId: String, unitId: String, guestCount: Int, familyLastName: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().addBookingUnit(groupId,unitId,guestCount,familyLastName) }
+            .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
+    }
+
+    fun removeBookingUnit(reservationId: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().removeBookingUnit(reservationId) }
+            .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
+    }
+
+    fun cancelBooking(groupId: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().cancelBooking(groupId) }
+            .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
     }
 
     fun lookupPerson(id: String, onResult: (PersonLookup?) -> Unit) = viewModelScope.launch(Dispatchers.IO) {
@@ -97,8 +153,15 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
     fun updateUnitCapacity(unitId: String, capacity: Int) = viewModelScope.launch(Dispatchers.IO) {
         runCatching { _busy.value = true; repo().updateUnitCapacity(unitId, capacity) }
             .onSuccess { _busy.value = false; refresh(); _message.value = "ظرفیت واحد ذخیره شد" }
-            .onFailure { _busy.value = false; _message.value = it.message }
+            .onFailure { handleFailure(it) }
     }
+
+    private fun handleFailure(t: Throwable) {
+        _busy.value = false
+        if (t is SessionExpiredException) { _sessionExpired.value = true; _serverState.value = "auth" }
+        else _message.value = t.message ?: "عملیات انجام نشد"
+    }
+
     fun clearMessage() { _message.value = null }
     fun clearSessionExpired() { _sessionExpired.value = false }
 }

@@ -30,6 +30,7 @@ data class Reservation(
     val endDate: String,
     val guestCount: Int,
     val reservationType: String,
+    val primaryLastName: String = "",
     val leaderName: String = "",
     val leaderPhone: String = "",
     val isPaid: Boolean = false,
@@ -39,7 +40,7 @@ data class Reservation(
 )
 
 data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "", val phone: String = "")
-data class PlanUnit(val unitId: String, val guestCount: Int)
+data class PlanUnit(val unitId: String, val guestCount: Int, val familyLastName: String = "")
 
 data class UnitSuggestion(
     val group: String,
