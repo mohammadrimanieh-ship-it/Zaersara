@@ -1,22 +1,13 @@
-# نسخه 0.3.3
+# نسخه 0.3.4
 
-این پچ برای رفع خطای Build نسخه 0.3.2 است.
+رفع خطای Build نسخه 0.3.3.
 
-علت خطا این بود که AppViewModel نسخه جدید روی GitHub قرار گرفته بود،
-اما Repository و مدل‌های هماهنگ با آن به‌صورت کامل جایگزین نشده بودند؛
-در نتیجه متدهای createBooking و updateUnitCapacity شناخته نمی‌شدند.
+علت خطا:
+فایل App.kt تابع normalizeNumeric را import می‌کرد، اما فایل
+util/PersianDigits.kt که این تابع در آن تعریف شده بود، در پچ قبلی
+برای GitHub قرار نگرفته بود.
 
-این پچ فایل‌های مرتبط را با هم و به‌صورت یک مجموعه هماهنگ آپلود می‌کند:
-- App.kt
-- AppViewModel.kt
-- Repository.kt
-- SupabaseRest.kt
-- Models.kt
-- build.gradle.kts
-- VERSION.txt
+این پچ فایل PersianDigits.kt را اضافه می‌کند و نسخه را به 0.3.4
+(versionCode=7) افزایش می‌دهد.
 
-نسخه:
-versionCode=6
-versionName=0.3.3
-
-برای این پچ نیازی به اجرای مجدد Migration در Supabase نیست.
+نیازی به اجرای مجدد SQL در Supabase نیست.
