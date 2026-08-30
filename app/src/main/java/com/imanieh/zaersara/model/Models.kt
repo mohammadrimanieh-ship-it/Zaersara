@@ -10,9 +10,11 @@ data class UnitItem(
 )
 
 data class PersonLookup(
+    val id: String = "",
     val firstName: String,
     val lastName: String,
     val nationalId: String,
+    val phone: String = "",
     val visitCount: Int = 0,
     val lastDeparture: String = ""
 )
@@ -36,8 +38,7 @@ data class Reservation(
     val notes: String = ""
 )
 
-data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "")
-
+data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "", val phone: String = "")
 data class PlanUnit(val unitId: String, val guestCount: Int)
 
 data class UnitSuggestion(
@@ -45,6 +46,4 @@ data class UnitSuggestion(
     val units: List<UnitItem>,
     val allocations: List<Int>,
     val spareCapacity: Int
-) {
-    val totalCapacity: Int get() = units.sumOf { it.capacity }
-}
+) { val totalCapacity: Int get() = units.sumOf { it.capacity } }

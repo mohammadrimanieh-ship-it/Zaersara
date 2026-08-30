@@ -1,4 +1,4 @@
 Zaersara Mashhad
-versionCode=7
-versionName=0.3.4
+versionName=0.4.0
+versionCode=8
 applicationId=com.imanieh.zaersara

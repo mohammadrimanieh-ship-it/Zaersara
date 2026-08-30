@@ -13,5 +13,9 @@ class AppPrefs(context: Context) {
     var accessToken: String
         get() = p.getString("access_token", "") ?: ""
         set(v) = p.edit().putString("access_token", v).apply()
+    var refreshToken: String
+        get() = p.getString("refresh_token", "") ?: ""
+        set(v) = p.edit().putString("refresh_token", v).apply()
     val configured get() = baseUrl.isNotBlank() && anonKey.isNotBlank()
+    fun clearSession() { p.edit().remove("access_token").remove("refresh_token").apply() }
 }

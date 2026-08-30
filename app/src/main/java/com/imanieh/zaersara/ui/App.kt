@@ -2,6 +2,9 @@
 
 package com.imanieh.zaersara.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
@@ -26,6 +30,9 @@ import com.imanieh.zaersara.util.JalaliCalendar
 import com.imanieh.zaersara.util.JalaliDate
 import com.imanieh.zaersara.util.normalizeNumeric
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
 
 private val AppColors = lightColorScheme(
     primary = Color(0xFF315F72),
@@ -45,7 +52,14 @@ fun App(vm: AppViewModel) {
             val nav = rememberNavController()
             val msg by vm.message.collectAsState()
             val busy by vm.busy.collectAsState()
+            val sessionExpired by vm.sessionExpired.collectAsState()
             LaunchedEffect(Unit) { vm.refresh() }
+            LaunchedEffect(sessionExpired) {
+                if (sessionExpired) {
+                    vm.clearSessionExpired()
+                    nav.navigate("login") { popUpTo("home") { inclusive = true } }
+                }
+            }
             val start = when {
                 !vm.configured -> "config"
                 !vm.loggedIn -> "login"
@@ -55,7 +69,7 @@ fun App(vm: AppViewModel) {
                 NavHost(nav, startDestination = start) {
                     composable("config") { ConfigScreen(vm) { if (vm.loggedIn) nav.popBackStack() else nav.navigate("login") { popUpTo("config") { inclusive = true } } } }
                     composable("login") { LoginScreen(vm) { nav.navigate("home") { popUpTo("login") { inclusive = true } } } }
-                    composable("home") { HomeScreen(vm, { nav.navigate("new") }, { nav.navigate("reports") }, { nav.navigate("units") }, { nav.navigate("people") }, { nav.navigate("config") }) }
+                    composable("home") { HomeScreen(vm, { nav.navigate("new") }, { nav.navigate("reports") }, { nav.navigate("units") }, { nav.navigate("people") }) }
                     composable("new") { NewReservationScreen(vm) { nav.popBackStack() } }
                     composable("reports") { ReportsScreen(vm) { nav.popBackStack() } }
                     composable("units") { UnitsScreen(vm) { nav.popBackStack() } }
@@ -94,28 +108,59 @@ fun LoginScreen(vm: AppViewModel, onOk: () -> Unit) {
 }
 
 @Composable
-fun HomeScreen(vm: AppViewModel, onNew: () -> Unit, onReports: () -> Unit, onUnits: () -> Unit, onPeople: () -> Unit, onConfig: () -> Unit) {
+fun HomeScreen(vm: AppViewModel, onNew: () -> Unit, onReports: () -> Unit, onUnits: () -> Unit, onPeople: () -> Unit) {
     val units by vm.units.collectAsState()
     val rs by vm.reservations.collectAsState()
-    val today = LocalDate.now()
+    val serverState by vm.serverState.collectAsState()
+    val lastSync by vm.lastSync.collectAsState()
+    var now by remember { mutableStateOf(LocalDateTime.now()) }
+    LaunchedEffect(Unit) { while (true) { now = LocalDateTime.now(); delay(1000) } }
+    val today = now.toLocalDate()
     val occupied = units.count { u -> rs.any { r -> r.unitId == u.id && runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false) } }
     val todayGuests = rs.filter { r -> runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false) }.sumOf { it.guestCount }
-    val received = rs.filter { it.isPaid && it.paymentStatus == "پرداخت شده" }.sumOf { it.amount }
+    val todayArrivals = rs.count { it.startDate == today.toString() }
+    val j = JalaliCalendar.fromGregorian(today)
+    val dayName = listOf("دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یکشنبه")[today.dayOfWeek.value - 1]
+    val timeText = now.format(DateTimeFormatter.ofPattern("HH:mm"))
 
     Scaffold(
-        topBar = { TopAppBar(title = { Column { Text("مدیریت زائرسرا مشهد", fontWeight = FontWeight.Bold); Text("داشبورد اقامت و رزرو", style = MaterialTheme.typography.labelMedium) } }, actions = { TextButton(onClick = { vm.refresh() }) { Text("بروزرسانی") } }) },
-        floatingActionButton = { ExtendedFloatingActionButton(onClick = onNew, text = { Text("رزرو جدید") }, icon = { Text("+") }) }
+        topBar = { TopAppBar(
+            title = { Column { Text("مدیریت زائرسرا مشهد", fontWeight = FontWeight.Bold); Text("داشبورد اقامت و رزرو", style = MaterialTheme.typography.labelMedium) } },
+            actions = { ServerStatusBadge(serverState, lastSync) { vm.refresh() } }
+        ) },
+        floatingActionButton = { ExtendedFloatingActionButton(onClick = onNew, modifier = Modifier.animateContentSize(), text = { Text("رزرو جدید") }, icon = { Text("+") }) }
     ) { p ->
         LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 96.dp)) {
-            item { Spacer(Modifier.height(2.dp)); Text("وضعیت امروز", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            item {
+                Card(Modifier.fillMaxWidth().animateContentSize(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha=.55f))) {
+                    Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column { Text("$dayName، ${j.display()}", fontWeight = FontWeight.Bold); Text("امروز", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Text(timeText, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+            item { Text("وضعیت امروز", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("زائر حاضر", todayGuests.toString(), Modifier.weight(1f)); MetricCard("واحد اشغال", "$occupied / ${units.size}", Modifier.weight(1f)) } }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("رزرو فعال", rs.size.toString(), Modifier.weight(1f)); MetricCard("وصولی", formatMoney(received), Modifier.weight(1f)) } }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("رزرو فعال", rs.size.toString(), Modifier.weight(1f)); MetricCard("ورودی امروز", todayArrivals.toString(), Modifier.weight(1f)) } }
             item { Text("دسترسی سریع", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
             item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { QuickButton("گزارش‌ها", onReports, Modifier.weight(1f)); QuickButton("واحدها", onUnits, Modifier.weight(1f)); QuickButton("سوابق زائر", onPeople, Modifier.weight(1f)) } }
-            item { OutlinedButton(onClick = onConfig, modifier = Modifier.fillMaxWidth()) { Text("تنظیم اتصال") } }
             item { Text("رزروهای نزدیک", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             if (rs.isEmpty()) item { EmptyCard("هنوز رزروی ثبت نشده است.") }
             items(rs.sortedBy { it.startDate }.take(20)) { r -> ReservationCard(r) }
+        }
+    }
+}
+
+@Composable
+private fun ServerStatusBadge(state: String, lastSync: Long?, onRefresh: () -> Unit) {
+    val transition = rememberInfiniteTransition(label = "serverPulse")
+    val pulse by transition.animateFloat(initialValue = .45f, targetValue = 1f, animationSpec = infiniteRepeatable(tween(850), RepeatMode.Reverse), label = "pulse")
+    val color = when(state) { "connected" -> Color(0xFF2E7D32); "offline" -> MaterialTheme.colorScheme.error; "auth" -> Color(0xFFF57C00); else -> MaterialTheme.colorScheme.primary }
+    val label = when(state) { "connected" -> "متصل"; "offline" -> "قطع"; "auth" -> "ورود مجدد"; else -> "اتصال…" }
+    TextButton(onClick = onRefresh) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Surface(Modifier.size(10.dp).alpha(if (state == "checking") pulse else 1f), shape = RoundedCornerShape(99.dp), color = color) {}
+            Text(label, color = color, style = MaterialTheme.typography.labelMedium)
         }
     }
 }
@@ -159,6 +204,7 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
     var fn by remember { mutableStateOf("") }
     var ln by remember { mutableStateOf("") }
     var nid by remember { mutableStateOf("") }
+    var guestPhone by remember { mutableStateOf("") }
     var personNote by remember { mutableStateOf("") }
     val people = peopleText.toIntOrNull() ?: 0
     val dateOk = startDate != null && endDate != null && endDate!!.isAfter(startDate!!)
@@ -170,7 +216,7 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
         if (nid.length == 10) {
             vm.lookupPerson(nid) { p ->
                 if (p != null) {
-                    fn = p.firstName; ln = p.lastName
+                    fn = p.firstName; ln = p.lastName; guestPhone = p.phone
                     personNote = if (p.visitCount > 0) "این زائر قبلاً ${p.visitCount} بار اقامت داشته است." else "مشخصات از سابقه بازیابی شد."
                 } else personNote = "کد ملی جدید است."
             }
@@ -193,7 +239,7 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                 itemsIndexed(suggestions) { index: Int, s: UnitSuggestion -> SuggestionCard(s, selected == s, { selected = s }, index == 0) }
             }
             if (selected != null) {
-                item { StepHeader("۳", "مشخصات رزرو و زائران", "کد ملی اختیاری است و اعداد فارسی هم پذیرفته می‌شوند.") }
+                item { StepHeader("۳", "مشخصات رزرو و زائران", "کد ملی اختیاری است؛ شماره موبایل برای جست‌وجوی بعدی ذخیره می‌شود.") }
                 item { OutlinedTextField(title, { title = it }, label = { Text("عنوان / نام خانواده یا کاروان") }, modifier = Modifier.fillMaxWidth()) }
                 if (caravan) item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(leader, { leader = it }, label = { Text("نام سرپرست") }, modifier = Modifier.fillMaxWidth()); OutlinedTextField(phone, { phone = normalizeNumeric(it, 11) }, label = { Text("شماره تماس سرپرست") }, modifier = Modifier.fillMaxWidth()) } }
                 item { Text("زائران ${guests.size} از $people", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
@@ -205,9 +251,10 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                             if (personNote.isNotBlank()) Text(personNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             OutlinedTextField(fn, { fn = it }, label = { Text("نام") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             OutlinedTextField(ln, { ln = it }, label = { Text("نام خانوادگی") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            OutlinedTextField(guestPhone, { guestPhone = normalizeNumeric(it, 11) }, label = { Text("شماره موبایل") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             val nationalValid = nid.isBlank() || nid.length == 10
                             val duplicate = nid.isNotBlank() && guests.any { it.nationalId == nid }
-                            Button(onClick = { guests = guests + GuestInput(fn.trim(), ln.trim(), nid); fn = ""; ln = ""; nid = ""; personNote = "" }, enabled = fn.isNotBlank() && ln.isNotBlank() && nationalValid && !duplicate, modifier = Modifier.fillMaxWidth()) { Text("+ افزودن زائر") }
+                            Button(onClick = { guests = guests + GuestInput(fn.trim(), ln.trim(), nid, guestPhone); fn = ""; ln = ""; nid = ""; guestPhone = ""; personNote = "" }, enabled = fn.isNotBlank() && ln.isNotBlank() && nationalValid && !duplicate, modifier = Modifier.fillMaxWidth()) { Text("+ افزودن زائر") }
                             if (duplicate) Text("این کد ملی قبلاً در همین رزرو اضافه شده است.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         }
                     }
@@ -251,67 +298,36 @@ private fun SuggestionCard(s: UnitSuggestion, selected: Boolean, onSelect: () ->
 
 @Composable
 fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
-    val rs by vm.reservations.collectAsState()
-    val units by vm.units.collectAsState()
-    var from by remember { mutableStateOf<LocalDate?>(null) }
-    var to by remember { mutableStateOf<LocalDate?>(null) }
-    var showFrom by remember { mutableStateOf(false) }
-    var showTo by remember { mutableStateOf(false) }
-    var group by remember { mutableStateOf("all") }
-    val fromDate: LocalDate? = from
-    val toDate: LocalDate? = to
-    val selectedGroup: String = group
-    val filtered: List<Reservation> = rs.filter { r: Reservation ->
-        val s: LocalDate = runCatching { LocalDate.parse(r.startDate) }.getOrNull() ?: return@filter false
-        val e: LocalDate = runCatching { LocalDate.parse(r.endDate) }.getOrNull() ?: return@filter false
-        val timeOk: Boolean =
-            (fromDate == null || e.isAfter(fromDate)) &&
-            (toDate == null || !s.isAfter(toDate))
-        val groupOk: Boolean = selectedGroup == "all" || r.unitGroup == selectedGroup
-        timeOk && groupOk
+    val rs by vm.reservations.collectAsState(); val units by vm.units.collectAsState()
+    var draftFrom by remember { mutableStateOf<LocalDate?>(null) }; var draftTo by remember { mutableStateOf<LocalDate?>(null) }; var draftGroup by remember { mutableStateOf("all") }
+    var appliedFrom by remember { mutableStateOf<LocalDate?>(null) }; var appliedTo by remember { mutableStateOf<LocalDate?>(null) }; var appliedGroup by remember { mutableStateOf("all") }; var generated by remember { mutableStateOf(false) }
+    var showFrom by remember { mutableStateOf(false) }; var showTo by remember { mutableStateOf(false) }
+    val filtered = if (!generated) emptyList() else rs.filter { r ->
+        val s = runCatching { LocalDate.parse(r.startDate) }.getOrNull() ?: return@filter false
+        val e = runCatching { LocalDate.parse(r.endDate) }.getOrNull() ?: return@filter false
+        (appliedFrom == null || e.isAfter(appliedFrom)) && (appliedTo == null || !s.isAfter(appliedTo)) && (appliedGroup == "all" || r.unitGroup == appliedGroup)
     }
-    val guests = filtered.sumOf { it.guestCount }
-    val revenue = filtered.filter { it.isPaid }.sumOf { it.amount }
-    val received = filtered.filter { it.isPaid && it.paymentStatus == "پرداخت شده" }.sumOf { it.amount }
-    val debt = filtered.filter { it.isPaid && it.paymentStatus != "پرداخت شده" }.sumOf { it.amount }
-
+    val guests = filtered.sumOf { it.guestCount }; val revenue = filtered.filter { it.isPaid }.sumOf { it.amount }; val received = filtered.filter { it.isPaid && it.paymentStatus == "پرداخت شده" }.sumOf { it.amount }; val debt = filtered.filter { it.isPaid && it.paymentStatus != "پرداخت شده" }.sumOf { it.amount }
     Scaffold(topBar = { TopAppBar(title = { Text("گزارش‌ها", fontWeight = FontWeight.Bold) }, navigationIcon = { TextButton(onClick = onBack) { Text("بازگشت") } }) }) { p ->
         LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
             item { Text("فیلتر گزارش", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = { showFrom = true }, modifier = Modifier.weight(1f)) { Text(from?.let { JalaliCalendar.fromGregorian(it).display() } ?: "از تاریخ") }; OutlinedButton(onClick = { showTo = true }, modifier = Modifier.weight(1f)) { Text(to?.let { JalaliCalendar.fromGregorian(it).display() } ?: "تا تاریخ") } } }
-            item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("all" to "همه مکان‌ها", "original" to "واحدهای اولیه", "fatemiyeh" to "فاطمیه", "apartment" to "آپارتمان").forEach { (k, label) -> FilterChip(selected = group == k, onClick = { group = k }, label = { Text(label) }) } } }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("رزرو", filtered.size.toString(), Modifier.weight(1f)); MetricCard("نفر", guests.toString(), Modifier.weight(1f)) } }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("مبلغ کل", formatMoney(revenue), Modifier.weight(1f)); MetricCard("وصول", formatMoney(received), Modifier.weight(1f)) } }
-            item { MetricCard("بدهی", formatMoney(debt), Modifier.fillMaxWidth()) }
-            item { Text("گزارش مکانی", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
-            val rows = units.map { u -> u to filtered.filter { it.unitId == u.id } }.filter { it.second.isNotEmpty() }
-            if (rows.isEmpty()) item { EmptyCard("در این بازه گزارشی وجود ندارد.") }
-            items(rows) { row: Pair<UnitItem, List<Reservation>> ->
-                val u: UnitItem = row.first
-                val unitReservations: List<Reservation> = row.second
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.padding(14.dp).fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text(u.name, fontWeight = FontWeight.Bold)
-                            Text(
-                                "${unitReservations.size} رزرو • ${unitReservations.sumOf { reservation: Reservation -> reservation.guestCount }} نفر",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        Text(
-                            "${formatMoney(unitReservations.filter { reservation: Reservation -> reservation.isPaid }.sumOf { reservation: Reservation -> reservation.amount })} تومان",
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = { showFrom = true }, modifier = Modifier.weight(1f)) { Text(draftFrom?.let { JalaliCalendar.fromGregorian(it).display() } ?: "از تاریخ") }; OutlinedButton(onClick = { showTo = true }, modifier = Modifier.weight(1f)) { Text(draftTo?.let { JalaliCalendar.fromGregorian(it).display() } ?: "تا تاریخ") } } }
+            item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("all" to "همه مکان‌ها", "original" to "زائرسرا", "fatemiyeh" to "فاطمیه", "apartment" to "آپارتمان").forEach { (k,label) -> FilterChip(selected = draftGroup == k, onClick = { draftGroup = k }, label = { Text(label) }) } } }
+            item { Button(onClick = { appliedFrom=draftFrom; appliedTo=draftTo; appliedGroup=draftGroup; generated=true }, modifier = Modifier.fillMaxWidth()) { Text("نمایش گزارش") } }
+            if (!generated) item { EmptyCard("بازه و مکان را انتخاب کنید و «نمایش گزارش» را بزنید.") }
+            if (generated) {
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("رزرو", filtered.size.toString(), Modifier.weight(1f)); MetricCard("نفر", guests.toString(), Modifier.weight(1f)) } }
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("مبلغ کل", formatMoney(revenue), Modifier.weight(1f)); MetricCard("وصول", formatMoney(received), Modifier.weight(1f)) } }
+                item { MetricCard("بدهی", formatMoney(debt), Modifier.fillMaxWidth()) }
+                item { Text("گزارش مکانی", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+                val rows = units.map { u -> u to filtered.filter { it.unitId == u.id } }.filter { it.second.isNotEmpty() }
+                if (rows.isEmpty()) item { EmptyCard("در این بازه گزارشی وجود ندارد.") }
+                items(rows) { (u, unitReservations) -> Card(Modifier.fillMaxWidth().animateContentSize()) { Row(Modifier.padding(14.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Column { Text(u.name, fontWeight = FontWeight.Bold); Text("${unitReservations.size} رزرو • ${unitReservations.sumOf { it.guestCount }} نفر", style = MaterialTheme.typography.bodySmall) }; Text("${formatMoney(unitReservations.filter { it.isPaid }.sumOf { it.amount })} تومان", color = MaterialTheme.colorScheme.primary) } } }
             }
         }
     }
-    if (showFrom) PersianDateDialog(from ?: LocalDate.now(), LocalDate.of(2020, 1, 1), "از تاریخ", { showFrom = false }) { from = it; showFrom = false }
-    if (showTo) PersianDateDialog(to ?: LocalDate.now(), LocalDate.of(2020, 1, 1), "تا تاریخ", { showTo = false }) { to = it; showTo = false }
+    if (showFrom) PersianDateDialog(draftFrom ?: LocalDate.now(), LocalDate.of(2020,1,1), "از تاریخ", { showFrom=false }) { draftFrom=it; showFrom=false }
+    if (showTo) PersianDateDialog(draftTo ?: LocalDate.now(), LocalDate.of(2020,1,1), "تا تاریخ", { showTo=false }) { draftTo=it; showTo=false }
 }
 
 @Composable
@@ -343,14 +359,18 @@ private fun UnitEditCard(u: UnitItem, onSave: (Int) -> Unit) {
 
 @Composable
 fun PeopleScreen(vm: AppViewModel, onBack: () -> Unit) {
-    var id by remember { mutableStateOf("") }
-    var result by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf("national") }; var query by remember { mutableStateOf("") }; var results by remember { mutableStateOf<List<PersonLookup>>(emptyList()) }; var searched by remember { mutableStateOf(false) }
+    val label = when(mode) { "phone" -> "شماره موبایل"; "last_name" -> "نام خانوادگی"; else -> "کد ملی" }
+    val normalizedQuery = if (mode == "last_name") query else normalizeNumeric(query, if (mode == "national") 10 else 11)
     Scaffold(topBar = { TopAppBar(title = { Text("سوابق زائر", fontWeight = FontWeight.Bold) }, navigationIcon = { TextButton(onClick = onBack) { Text("بازگشت") } }) }) { p ->
-        Column(Modifier.padding(p).fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            InfoCard("جستجوی سابقه", "کد ملی را با اعداد فارسی یا انگلیسی وارد کنید.")
-            OutlinedTextField(id, { id = normalizeNumeric(it, 10) }, label = { Text("کد ملی") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            Button(onClick = { vm.checkPerson(id) { result = it } }, enabled = id.length == 10, modifier = Modifier.fillMaxWidth()) { Text("بررسی سابقه") }
-            if (result.isNotBlank()) Card(Modifier.fillMaxWidth()) { Text(result, Modifier.padding(16.dp)) }
+        LazyColumn(Modifier.padding(p).fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { InfoCard("جستجوی سابقه", "با کد ملی، شماره موبایل یا بخشی از نام خانوادگی جست‌وجو کنید.") }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { FilterChip(selected=mode=="national", onClick={mode="national";query="";results=emptyList()}, label={Text("کد ملی")}); FilterChip(selected=mode=="phone", onClick={mode="phone";query="";results=emptyList()}, label={Text("موبایل")}); FilterChip(selected=mode=="last_name", onClick={mode="last_name";query="";results=emptyList()}, label={Text("نام خانوادگی")}) } }
+            item { OutlinedTextField(query, { query = if (mode=="last_name") it else normalizeNumeric(it, if(mode=="national")10 else 11) }, label={Text(label)}, modifier=Modifier.fillMaxWidth(), singleLine=true) }
+            val valid = when(mode) { "national" -> query.length==10; "phone" -> query.length>=7; else -> query.trim().length>=2 }
+            item { Button(onClick={ searched=true; vm.searchPeople(mode, query) { results=it } }, enabled=valid, modifier=Modifier.fillMaxWidth()) { Text("جست‌وجو") } }
+            if (searched && results.isEmpty()) item { EmptyCard("سابقه‌ای پیدا نشد.") }
+            items(results) { person -> Card(Modifier.fillMaxWidth().animateContentSize()) { Column(Modifier.padding(14.dp), verticalArrangement=Arrangement.spacedBy(5.dp)) { Text("${person.firstName} ${person.lastName}", fontWeight=FontWeight.Bold); if(person.phone.isNotBlank()) Text("موبایل: ${person.phone}"); if(person.nationalId.isNotBlank() && person.nationalId != "null") Text("کد ملی: ${person.nationalId}"); Text("تعداد اقامت: ${person.visitCount}", color=MaterialTheme.colorScheme.primary); if(person.lastDeparture.isNotBlank() && person.lastDeparture != "null") Text("آخرین خروج: ${runCatching { JalaliCalendar.isoToJalali(person.lastDeparture) }.getOrDefault(person.lastDeparture)}", style=MaterialTheme.typography.bodySmall) } } }
         }
     }
 }
@@ -431,10 +451,10 @@ fun PersianDateDialog(
 private fun Page(title: String, content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); content() }
 
 @Composable
-private fun MetricCard(label: String, value: String, modifier: Modifier = Modifier) = Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f))) { Column(Modifier.padding(14.dp)) { Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); Text(label, style = MaterialTheme.typography.bodySmall) } }
+private fun MetricCard(label: String, value: String, modifier: Modifier = Modifier) = Card(modifier.animateContentSize(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f))) { Column(Modifier.padding(14.dp)) { Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); Text(label, style = MaterialTheme.typography.bodySmall) } }
 
 @Composable
-private fun QuickButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) = FilledTonalButton(onClick = onClick, modifier = modifier.heightIn(min = 52.dp)) { Text(label) }
+private fun QuickButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) = FilledTonalButton(onClick = onClick, modifier = modifier.heightIn(min = 52.dp).animateContentSize()) { Text(label) }
 
 @Composable
 private fun InfoCard(title: String, text: String) = Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .65f))) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { Text(title, fontWeight = FontWeight.Bold); Text(text, style = MaterialTheme.typography.bodySmall) } }
@@ -446,11 +466,11 @@ private fun EmptyCard(text: String) = Card(Modifier.fillMaxWidth(), colors = Car
 private fun StepHeader(number: String, title: String, subtitle: String) = Row(verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(99.dp), color = MaterialTheme.colorScheme.primary) { Text(number, Modifier.padding(horizontal = 11.dp, vertical = 6.dp), color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold) }; Spacer(Modifier.width(10.dp)); Column { Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 
 @Composable
-private fun GuestCard(g: GuestInput, onDelete: () -> Unit) = Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("${g.firstName} ${g.lastName}", fontWeight = FontWeight.Medium); Text(if (g.nationalId.isBlank()) "بدون کد ملی" else g.nationalId, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; TextButton(onClick = onDelete) { Text("حذف") } } }
+private fun GuestCard(g: GuestInput, onDelete: () -> Unit) = Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("${g.firstName} ${g.lastName}", fontWeight = FontWeight.Medium); Text(listOfNotNull(if (g.nationalId.isBlank()) "بدون کد ملی" else g.nationalId, g.phone.takeIf { it.isNotBlank() }).joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; TextButton(onClick = onDelete) { Text("حذف") } } }
 
 @Composable
 private fun SuggestionBadge(text: String) = Surface(shape = RoundedCornerShape(99.dp), color = MaterialTheme.colorScheme.secondaryContainer) { Text(text, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall) }
 
-private fun groupName(group: String) = when (group) { "fatemiyeh" -> "فاطمیه"; "apartment" -> "آپارتمان‌ها"; else -> "واحدهای اولیه" }
+private fun groupName(group: String) = when (group) { "fatemiyeh" -> "فاطمیه"; "apartment" -> "آپارتمان‌ها"; else -> "زائرسرا" }
 
 private fun formatMoney(v: Long): String = String.format("%,d", v)
