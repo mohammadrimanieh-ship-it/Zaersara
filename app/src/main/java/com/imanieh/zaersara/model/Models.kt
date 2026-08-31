@@ -36,7 +36,9 @@ data class Reservation(
     val isPaid: Boolean = false,
     val amount: Long = 0,
     val paymentStatus: String = "رایگان",
-    val notes: String = ""
+    val notes: String = "",
+    val checkInAt: String = "",
+    val checkOutAt: String = ""
 )
 
 data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "", val phone: String = "")

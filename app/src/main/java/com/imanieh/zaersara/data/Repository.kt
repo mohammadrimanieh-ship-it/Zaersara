@@ -19,7 +19,7 @@ class Repository(private val api: SupabaseRest) {
     }
 
     fun reservations(): List<Reservation> {
-        val a = api.get("/rest/v1/reservations?select=id,booking_group_id,title,unit_id,start_date,end_date,guest_count,reservation_type,primary_last_name,leader_name,leader_phone,is_paid,amount,payment_status,notes,units(name,unit_group)&status=neq.cancelled&order=start_date")
+        val a = api.get("/rest/v1/reservations?select=id,booking_group_id,title,unit_id,start_date,end_date,guest_count,reservation_type,primary_last_name,leader_name,leader_phone,is_paid,amount,payment_status,notes,check_in_at,check_out_at,units(name,unit_group)&status=neq.cancelled&order=start_date")
         return (0 until a.length()).map { i ->
             val o = a.getJSONObject(i); val u = o.optJSONObject("units")
             Reservation(
@@ -28,7 +28,8 @@ class Repository(private val api: SupabaseRest) {
                 startDate = o.getString("start_date"), endDate = o.getString("end_date"), guestCount = o.getInt("guest_count"),
                 reservationType = o.optString("reservation_type"), primaryLastName = o.optString("primary_last_name"),
                 leaderName = o.optString("leader_name"), leaderPhone = o.optString("leader_phone"),
-                isPaid = o.optBoolean("is_paid"), amount = o.optLong("amount"), paymentStatus = o.optString("payment_status"), notes = o.optString("notes")
+                isPaid = o.optBoolean("is_paid"), amount = o.optLong("amount"), paymentStatus = o.optString("payment_status"), notes = o.optString("notes"),
+                checkInAt = o.optString("check_in_at"), checkOutAt = o.optString("check_out_at")
             )
         }
     }
@@ -75,6 +76,26 @@ class Repository(private val api: SupabaseRest) {
 
     fun cancelBooking(groupId: String) {
         api.post("/rest/v1/rpc/cancel_booking", JSONObject().put("p_booking_group_id", groupId))
+    }
+
+    fun markBookingStatus(groupId: String, action: String) {
+        api.post("/rest/v1/rpc/mark_booking_status", JSONObject().put("p_booking_group_id", groupId).put("p_action", action))
+    }
+
+    fun reservationGuests(reservationId: String): List<GuestInput> {
+        val body = JSONObject().put("p_reservation_id", reservationId)
+        val a = api.post("/rest/v1/rpc/get_reservation_guests", body)
+        val items = a.optJSONArray("items") ?: a.optJSONObject("get_reservation_guests")?.optJSONArray("items") ?: JSONArray()
+        return (0 until items.length()).map { i ->
+            val o = items.getJSONObject(i)
+            GuestInput(o.optString("first_name"), o.optString("last_name"), o.optString("national_id"), o.optString("phone"))
+        }
+    }
+
+    fun setReservationGuests(reservationId: String, guests: List<GuestInput>) {
+        val a = JSONArray()
+        guests.forEach { g -> a.put(JSONObject().put("first_name", g.firstName).put("last_name", g.lastName).put("national_id", g.nationalId.ifBlank { JSONObject.NULL }).put("phone", g.phone)) }
+        api.post("/rest/v1/rpc/set_reservation_guests", JSONObject().put("p_reservation_id", reservationId).put("p_guests", a))
     }
 
     fun lookupPerson(nationalId: String): PersonLookup? = searchPeople("national", nationalId).firstOrNull()

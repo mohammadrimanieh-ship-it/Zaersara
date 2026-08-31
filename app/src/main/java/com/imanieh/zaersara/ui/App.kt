@@ -96,8 +96,11 @@ fun App(vm: AppViewModel) {
                         HomeScreen(vm,
                             onNew = { nav.navigate("new") },
                             onReports = { nav.navigate("reports") },
-                            onUnits = { nav.navigate("units") },
                             onPeople = { nav.navigate("people") },
+                            onToday = { nav.navigate("today/all") },
+                            onCalendar = { nav.navigate("occupancy") },
+                            onSearch = { nav.navigate("search") },
+                            onMetric = { nav.navigate("today/$it") },
                             onDetail = { nav.navigate("detail/$it") }
                         )
                     }
@@ -105,6 +108,9 @@ fun App(vm: AppViewModel) {
                     composable("reports") { ReportsScreen(vm) { nav.popBackStack() } }
                     composable("units") { UnitsScreen(vm) { nav.popBackStack() } }
                     composable("people") { PeopleScreen(vm) { nav.popBackStack() } }
+                    composable("today/{mode}") { back -> TodayScreen(vm, back.arguments?.getString("mode") ?: "all", { nav.popBackStack() }) { nav.navigate("detail/$it") } }
+                    composable("occupancy") { OccupancyScreen(vm, { nav.popBackStack() }) { nav.navigate("detail/$it") } }
+                    composable("search") { GlobalSearchScreen(vm, { nav.popBackStack() }) { nav.navigate("detail/$it") } }
                     composable("detail/{id}") { back ->
                         ReservationDetailsScreen(vm, back.arguments?.getString("id").orEmpty()) { nav.popBackStack() }
                     }
@@ -152,7 +158,17 @@ fun LoginScreen(vm: AppViewModel, onOk: () -> Unit) {
 }
 
 @Composable
-fun HomeScreen(vm: AppViewModel, onNew: () -> Unit, onReports: () -> Unit, onUnits: () -> Unit, onPeople: () -> Unit, onDetail: (String) -> Unit) {
+fun HomeScreen(
+    vm: AppViewModel,
+    onNew: () -> Unit,
+    onReports: () -> Unit,
+    onPeople: () -> Unit,
+    onToday: () -> Unit,
+    onCalendar: () -> Unit,
+    onSearch: () -> Unit,
+    onMetric: (String) -> Unit,
+    onDetail: (String) -> Unit
+) {
     val units by vm.units.collectAsState()
     val rs by vm.reservations.collectAsState()
     val serverState by vm.serverState.collectAsState()
@@ -160,114 +176,54 @@ fun HomeScreen(vm: AppViewModel, onNew: () -> Unit, onReports: () -> Unit, onUni
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     LaunchedEffect(Unit) { while (true) { now = LocalDateTime.now(); delay(1000) } }
     val today = now.toLocalDate()
-    val occupied = units.count { u -> rs.any { r -> r.unitId == u.id && runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false) } }
-    val todayGuests = rs.filter { r -> runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false) }.sumOf { it.guestCount }
-    val todayArrivals = rs.count { it.startDate == today.toString() }
+    fun activeToday(r: Reservation) = runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false)
+    val occupied = units.count { u -> rs.any { it.unitId == u.id && activeToday(it) } }
+    val checkedInRows = rs.filter { it.checkInAt.isNotBlank() && it.checkInAt != "null" && (it.checkOutAt.isBlank() || it.checkOutAt == "null") }
+    val todayGuests = if (checkedInRows.isNotEmpty()) checkedInRows.sumOf { it.guestCount } else rs.filter(::activeToday).sumOf { it.guestCount }
+    val todayArrivals = rs.filter { it.startDate == today.toString() }.map { it.bookingGroupId.ifBlank { it.id } }.distinct().size
     val activeBookings = rs.map { it.bookingGroupId.ifBlank { it.id } }.distinct().size
     val j = JalaliCalendar.fromGregorian(today)
     val dayName = listOf("دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یکشنبه")[today.dayOfWeek.value - 1]
     val timeText = now.format(DateTimeFormatter.ofPattern("HH:mm"))
-    val grouped = rs.groupBy { it.bookingGroupId.ifBlank { it.id } }.values
-        .sortedBy { it.minOfOrNull { r -> r.startDate } ?: "" }.take(20)
+    val grouped = rs.groupBy { it.bookingGroupId.ifBlank { it.id } }.values.sortedBy { it.minOfOrNull { r -> r.startDate } ?: "" }.take(20)
 
     Scaffold(
         containerColor = Navy,
-        bottomBar = { HomeBottomBar(onReports, onUnits, onPeople) },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onNew,
-                containerColor = Purple,
-                contentColor = Color.White,
-                icon = { Icon(Icons.Default.Add, null) },
-                text = { Text("رزرو جدید", fontWeight = FontWeight.Bold) }
-            )
-        }
+        bottomBar = { HomeBottomBar(onToday, onReports, onPeople) },
+        floatingActionButton = { ExtendedFloatingActionButton(onClick=onNew,containerColor=Purple,contentColor=Color.White,icon={Icon(Icons.Default.Add,null)},text={Text("رزرو جدید",fontWeight=FontWeight.Bold)}) }
     ) { p ->
-        LazyColumn(
-            Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(top = 14.dp, bottom = 96.dp)
-        ) {
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column {
-                        Text("مدیریت زائرسرا مشهد", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                        Text("مدیریت رزرو و اقامت", color = TextMuted)
-                    }
-                    ServerStatusBadge(serverState, lastSync) { vm.refresh() }
-                }
-            }
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = NavyCard2), shape = RoundedCornerShape(24.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column { Text("$dayName، ${j.display()}", fontWeight = FontWeight.Bold); Text("تاریخ امروز", style = MaterialTheme.typography.bodySmall, color = TextMuted) }
-                        Column(horizontalAlignment = Alignment.End) { Text(timeText, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = PurpleSoft); Text("ساعت", style = MaterialTheme.typography.bodySmall, color = TextMuted) }
-                    }
-                }
-            }
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = NavyCard), shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, Color.White.copy(alpha = .07f))) {
-                    Row(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        DashboardMetric(Icons.Default.People, "زائر حاضر", todayGuests.toString(), Mint)
-                        DashboardDivider()
-                        DashboardMetric(Icons.Default.Home, "واحد اشغال", "$occupied/${units.size}", Gold)
-                        DashboardDivider()
-                        DashboardMetric(Icons.Default.CheckCircle, "رزرو فعال", activeBookings.toString(), PurpleSoft)
-                        DashboardDivider()
-                        DashboardMetric(Icons.Default.DateRange, "ورودی امروز", todayArrivals.toString(), Pink)
-                    }
-                }
-            }
-            item { Text("دسترسی سریع", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    QuickAction("گزارش‌ها", Icons.Default.List, onReports, Modifier.weight(1f))
-                    QuickAction("واحدها", Icons.Default.Home, onUnits, Modifier.weight(1f))
-                    QuickAction("سوابق", Icons.Default.Search, onPeople, Modifier.weight(1f))
-                }
-            }
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("رزروهای نزدیک", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Icon(Icons.Default.DateRange, null, tint = PurpleSoft)
-                }
-            }
-            if (grouped.isEmpty()) item { EmptyCard("هنوز رزروی ثبت نشده است.") }
-            items(grouped) { rows -> BookingCard(rows) { onDetail(rows.first().id) } }
+        LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal=16.dp),verticalArrangement=Arrangement.spacedBy(14.dp),contentPadding=PaddingValues(top=14.dp,bottom=96.dp)) {
+            item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) { Column { Text("مدیریت زائرسرا مشهد",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.ExtraBold);Text("مرکز عملیات امروز",color=TextMuted) }; ServerStatusBadge(serverState,lastSync){vm.refresh()} } }
+            item { Card(colors=CardDefaults.cardColors(containerColor=NavyCard2),shape=RoundedCornerShape(24.dp)) { Row(Modifier.fillMaxWidth().padding(18.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) { Column { Text("$dayName، ${j.display()}",fontWeight=FontWeight.Bold);Text("تاریخ امروز",style=MaterialTheme.typography.bodySmall,color=TextMuted) };Column(horizontalAlignment=Alignment.End){Text(timeText,style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.ExtraBold,color=PurpleSoft);Text("ساعت",style=MaterialTheme.typography.bodySmall,color=TextMuted)} } } }
+            item { Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(26.dp),border=BorderStroke(1.dp,Color.White.copy(alpha=.07f))) { Row(Modifier.fillMaxWidth().padding(vertical=18.dp),horizontalArrangement=Arrangement.SpaceEvenly) { DashboardMetric(Icons.Default.People,"زائر حاضر",todayGuests.toString(),Mint){onMetric("present")};DashboardDivider();DashboardMetric(Icons.Default.Home,"واحد اشغال","$occupied/${units.size}",Gold){onMetric("occupied")};DashboardDivider();DashboardMetric(Icons.Default.CheckCircle,"رزرو فعال",activeBookings.toString(),PurpleSoft){onMetric("active")};DashboardDivider();DashboardMetric(Icons.Default.DateRange,"ورودی امروز",todayArrivals.toString(),Pink){onMetric("arrivals")} } } }
+            item { Text("دسترسی سریع",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold) }
+            item { Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) { QuickAction("امروز",Icons.Default.Today,onToday,Modifier.weight(1f));QuickAction("جستجو",Icons.Default.Search,onSearch,Modifier.weight(1f));QuickAction("تقویم اشغال",Icons.Default.CalendarMonth,onCalendar,Modifier.weight(1f)) } }
+            item { Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text("رزروهای نزدیک",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold);Icon(Icons.Default.DateRange,null,tint=PurpleSoft)} }
+            if(grouped.isEmpty()) item { EmptyCard("هنوز رزروی ثبت نشده است.") }
+            items(grouped){rows->BookingCard(rows){onDetail(rows.first().id)}}
         }
     }
 }
 
 @Composable
-private fun HomeBottomBar(onReports: () -> Unit, onUnits: () -> Unit, onPeople: () -> Unit) {
-    NavigationBar(containerColor = Color(0xFF11182D), tonalElevation = 0.dp) {
-        NavigationBarItem(selected = true, onClick = {}, icon = { Icon(Icons.Default.Home, null) }, label = { Text("خانه") })
-        NavigationBarItem(selected = false, onClick = onReports, icon = { Icon(Icons.Default.List, null) }, label = { Text("گزارش") })
-        NavigationBarItem(selected = false, onClick = onUnits, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("واحدها") })
-        NavigationBarItem(selected = false, onClick = onPeople, icon = { Icon(Icons.Default.Person, null) }, label = { Text("سوابق") })
+private fun HomeBottomBar(onToday:()->Unit,onReports:()->Unit,onPeople:()->Unit){
+    NavigationBar(containerColor=Color(0xFF11182D),tonalElevation=0.dp){
+        NavigationBarItem(selected=true,onClick={},icon={Icon(Icons.Default.Home,null)},label={Text("خانه")})
+        NavigationBarItem(selected=false,onClick=onToday,icon={Icon(Icons.Default.Today,null)},label={Text("امروز")})
+        NavigationBarItem(selected=false,onClick=onReports,icon={Icon(Icons.Default.List,null)},label={Text("گزارش")})
+        NavigationBarItem(selected=false,onClick=onPeople,icon={Icon(Icons.Default.Person,null)},label={Text("سوابق")})
     }
 }
 
 @Composable
-private fun DashboardMetric(icon: ImageVector, label: String, value: String, tint: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(26.dp))
-        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = TextMuted)
-    }
+private fun DashboardMetric(icon:ImageVector,label:String,value:String,tint:Color,onClick:()->Unit){
+    Surface(onClick=onClick,color=Color.Transparent,shape=RoundedCornerShape(16.dp)){Column(Modifier.padding(horizontal=5.dp,vertical=4.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(5.dp)){Icon(icon,null,tint=tint,modifier=Modifier.size(26.dp));Text(value,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.ExtraBold);Text(label,style=MaterialTheme.typography.labelSmall,color=TextMuted)}}
 }
 
-@Composable private fun DashboardDivider() { Box(Modifier.width(1.dp).height(70.dp).padding(vertical = 8.dp)) { Surface(Modifier.fillMaxSize(), color = Color.White.copy(alpha=.10f)) {} } }
+@Composable private fun DashboardDivider(){Box(Modifier.width(1.dp).height(70.dp).padding(vertical=8.dp)){Surface(Modifier.fillMaxSize(),color=Color.White.copy(alpha=.10f)) {}}}
 
 @Composable
-private fun QuickAction(label: String, icon: ImageVector, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Card(onClick = onClick, modifier = modifier, colors = CardDefaults.cardColors(containerColor = NavyCard2), shape = RoundedCornerShape(22.dp), border = BorderStroke(1.dp, Purple.copy(alpha=.20f))) {
-        Column(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Surface(shape = CircleShape, color = Purple.copy(alpha=.18f)) { Icon(icon, null, tint = PurpleSoft, modifier = Modifier.padding(10.dp).size(24.dp)) }
-            Text(label, fontWeight = FontWeight.Medium)
-        }
-    }
-}
+private fun QuickAction(label:String,icon:ImageVector,onClick:()->Unit,modifier:Modifier=Modifier){Card(onClick=onClick,modifier=modifier,colors=CardDefaults.cardColors(containerColor=NavyCard2),shape=RoundedCornerShape(22.dp),border=BorderStroke(1.dp,Purple.copy(alpha=.20f))){Column(Modifier.fillMaxWidth().padding(vertical=18.dp,horizontal=4.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)){Surface(shape=CircleShape,color=Purple.copy(alpha=.18f)){Icon(icon,null,tint=PurpleSoft,modifier=Modifier.padding(10.dp).size(24.dp))};Text(label,fontWeight=FontWeight.Medium,style=MaterialTheme.typography.bodySmall)}}}
 
 @Composable
 private fun ServerStatusBadge(state: String, lastSync: Long?, onRefresh: () -> Unit) {
@@ -318,7 +274,7 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
     var searched by remember { mutableStateOf(false) }; var selected by remember { mutableStateOf<UnitSuggestion?>(null) }; var stage by remember { mutableIntStateOf(1) }
     var title by remember { mutableStateOf("") }; var leader by remember { mutableStateOf("") }; var phone by remember { mutableStateOf("") }
     var paid by remember { mutableStateOf(false) }; var paymentStatus by remember { mutableStateOf("پرداخت شده") }; var amount by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }
-    var familyNames by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var allocationTexts by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var unitGuests by remember { mutableStateOf<Map<String,List<GuestInput>>>(emptyMap()) }
+    var familyNames by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var allocationTexts by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var unitGuests by remember { mutableStateOf<Map<String,List<GuestInput>>>(emptyMap()) }; var editingUnitId by remember { mutableStateOf<String?>(null) }
     val people = peopleText.toIntOrNull() ?: 0
     val dateOk = startDate != null && endDate != null && endDate!!.isAfter(startDate!!)
     val suggestions = remember(startDate,endDate,people,caravan,searched,units,rs) { if (searched && dateOk && people>0) vm.suggestions(startDate!!,endDate!!,people,caravan) else emptyList() }
@@ -366,17 +322,10 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                             Text(u.name, fontWeight=FontWeight.Bold, color=PurpleSoft)
                             OutlinedTextField(familyNames[u.id].orEmpty(), { v -> familyNames=familyNames.toMutableMap().also{it[u.id]=v} }, label={Text("نام خانوادگی اصلی")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
                             OutlinedTextField(allocationTexts[u.id].orEmpty(), { v -> allocationTexts=allocationTexts.toMutableMap().also{it[u.id]=normalizeNumeric(v,3)} }, label={Text("تعداد نفرات")}, supportingText={Text(if(maxCap==null) "بدون محدودیت ظرفیت" else "ظرفیت واحد: $maxCap نفر")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
-                            Text("مشخصات افراد (اختیاری)", color=PurpleSoft, fontWeight=FontWeight.Bold)
-                            (unitGuests[u.id] ?: emptyList()).forEachIndexed { gi, g ->
-                                Card(colors=CardDefaults.cardColors(containerColor=Navy), shape=RoundedCornerShape(14.dp)) { Column(Modifier.padding(10.dp), verticalArrangement=Arrangement.spacedBy(6.dp)) {
-                                    OutlinedTextField(g.firstName,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(firstName=v)}}},label={Text(if(gi==0) "نام نفر اصلی" else "نام همراه")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                                    OutlinedTextField(g.lastName,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(lastName=v)}}},label={Text("نام خانوادگی")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                                    OutlinedTextField(g.nationalId,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(nationalId=normalizeNumeric(v,10))}}},label={Text("کد ملی (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                                    OutlinedTextField(g.phone,{v-> unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it[gi]=g.copy(phone=normalizeNumeric(v,11))}}},label={Text("موبایل (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                                    TextButton(onClick={unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()).toMutableList().also{it.removeAt(gi)}}}){Text("حذف این فرد",color=Pink)}
-                                } }
+                            OutlinedButton(onClick={editingUnitId=u.id}, modifier=Modifier.fillMaxWidth()) {
+                                Icon(Icons.Default.Group,null); Spacer(Modifier.width(6.dp));
+                                Text(if((unitGuests[u.id] ?: emptyList()).isEmpty()) "ثبت مشخصات نفر اصلی و همراهان" else "مشخصات افراد (${unitGuests[u.id]!!.size})")
                             }
-                            OutlinedButton(onClick={ val ln=familyNames[u.id].orEmpty(); unitGuests=unitGuests.toMutableMap().also{m->m[u.id]=(m[u.id]?:emptyList()) + GuestInput("",ln,"","")} }, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.PersonAdd,null); Spacer(Modifier.width(6.dp)); Text(if((unitGuests[u.id]?.isEmpty()!=false)) "ثبت مشخصات نفر اصلی" else "افزودن فرد همراه") }
                         }
                     }
                 }
@@ -399,12 +348,38 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
             }
         }
     }
+    val editUnit = selected?.units?.firstOrNull { it.id == editingUnitId }
+    if (editUnit != null) NewUnitGuestsDialog(
+        unit = editUnit,
+        familyLastName = familyNames[editUnit.id].orEmpty(),
+        initial = unitGuests[editUnit.id] ?: emptyList(),
+        onDismiss = { editingUnitId = null },
+        onSave = { list -> unitGuests = unitGuests.toMutableMap().also { it[editUnit.id] = list }; editingUnitId = null }
+    )
     if (showStartPicker) PersianDateDialog(startDate ?: LocalDate.now(), LocalDate.now(), "تاریخ ورود", { showStartPicker=false }) {
         startDate=it; if(endDate!=null && !endDate!!.isAfter(it)) endDate=null; searched=false;selected=null;stage=1;showStartPicker=false;showEndPicker=true
     }
     if (showEndPicker) PersianDateDialog(endDate ?: (startDate ?: LocalDate.now()).plusDays(1), (startDate ?: LocalDate.now()).plusDays(1), "تاریخ خروج", { showEndPicker=false }) {
         endDate=it;searched=false;selected=null;stage=1;showEndPicker=false
     }
+}
+
+@Composable
+private fun NewUnitGuestsDialog(unit:UnitItem,familyLastName:String,initial:List<GuestInput>,onDismiss:()->Unit,onSave:(List<GuestInput>)->Unit){
+    var guests by remember(unit.id){mutableStateOf(initial)}
+    AlertDialog(onDismissRequest=onDismiss,title={Text("${unit.name} • مشخصات افراد")},text={
+        LazyColumn(Modifier.heightIn(max=520.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+            item{InfoCard("ثبت اختیاری","برای ثبت رزرو فقط نام خانوادگی و تعداد نفرات واحد الزامی است. اطلاعات نفر اصلی و همراهان برای گزارش‌گیری دقیق‌تر اختیاری است.")}
+            itemsIndexed(guests){i,g->Card(colors=CardDefaults.cardColors(containerColor=NavyCard2),shape=RoundedCornerShape(16.dp)){Column(Modifier.padding(10.dp),verticalArrangement=Arrangement.spacedBy(5.dp)){
+                OutlinedTextField(g.firstName,{v->guests=guests.toMutableList().also{it[i]=g.copy(firstName=v)}},label={Text(if(i==0)"نام نفر اصلی" else "نام همراه")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(g.lastName,{v->guests=guests.toMutableList().also{it[i]=g.copy(lastName=v)}},label={Text("نام خانوادگی")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(g.nationalId,{v->guests=guests.toMutableList().also{it[i]=g.copy(nationalId=normalizeNumeric(v,10))}},label={Text("کد ملی (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(g.phone,{v->guests=guests.toMutableList().also{it[i]=g.copy(phone=normalizeNumeric(v,11))}},label={Text("موبایل (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                TextButton(onClick={guests=guests.toMutableList().also{it.removeAt(i)}}){Text("حذف فرد",color=Pink)}
+            }}}
+            item{OutlinedButton(onClick={guests=guests+GuestInput("",familyLastName,"","")},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.PersonAdd,null);Spacer(Modifier.width(6.dp));Text(if(guests.isEmpty())"افزودن نفر اصلی" else "افزودن همراه")}}
+        }
+    },confirmButton={Button(onClick={onSave(guests)},enabled=guests.all{it.lastName.isNotBlank()&&(it.nationalId.isBlank()||it.nationalId.length==10)}){Text("ثبت اطلاعات افراد")}},dismissButton={TextButton(onClick=onDismiss){Text("انصراف")}})
 }
 
 @Composable
@@ -453,6 +428,13 @@ fun ReservationDetailsScreen(vm: AppViewModel, reservationId: String, onBack: ()
             items(rows) { r -> ReservationUnitEditCard(vm,r,units,start,end,editable=edit,canRemove=rows.size>1) }
             if(edit && first.reservationType=="caravan") item { OutlinedButton(onClick={showAdd=true},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Add,null);Spacer(Modifier.width(6.dp));Text("افزودن واحد به کاروان")} }
             if(!edit) {
+                item {
+                    val checkedIn = first.checkInAt.isNotBlank() && first.checkInAt != "null"
+                    val checkedOut = first.checkOutAt.isNotBlank() && first.checkOutAt != "null"
+                    if(!checkedIn) Button(onClick={vm.markBookingStatus(gid,"check_in")},modifier=Modifier.fillMaxWidth(),colors=ButtonDefaults.buttonColors(containerColor=Mint,contentColor=Navy)){Icon(Icons.Default.Login,null);Spacer(Modifier.width(7.dp));Text("ورود انجام شد",fontWeight=FontWeight.Bold)}
+                    else if(!checkedOut) Button(onClick={vm.markBookingStatus(gid,"check_out")},modifier=Modifier.fillMaxWidth(),colors=ButtonDefaults.buttonColors(containerColor=Gold,contentColor=Navy)){Icon(Icons.Default.Logout,null);Spacer(Modifier.width(7.dp));Text("خروج انجام شد",fontWeight=FontWeight.Bold)}
+                    else InfoCard("وضعیت اقامت","ورود و خروج این رزرو ثبت شده است.")
+                }
                 item { Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { Button(onClick={edit=true},modifier=Modifier.weight(1f)){Icon(Icons.Default.Edit,null);Spacer(Modifier.width(6.dp));Text("ویرایش")}; OutlinedButton(onClick={showExtend=true},modifier=Modifier.weight(1f)){Icon(Icons.Default.DateRange,null);Spacer(Modifier.width(6.dp));Text("تمدید")} } }
                 item { OutlinedButton(onClick={showCancel=true},modifier=Modifier.fillMaxWidth(),colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error)){Icon(Icons.Default.Delete,null);Spacer(Modifier.width(6.dp));Text("لغو رزرو")} }
             }
@@ -467,12 +449,12 @@ fun ReservationDetailsScreen(vm: AppViewModel, reservationId: String, onBack: ()
 
 @Composable
 private fun ReservationUnitEditCard(vm: AppViewModel, r: Reservation, units: List<UnitItem>, start: LocalDate, end: LocalDate, editable: Boolean, canRemove: Boolean) {
-    var surname by remember(r.id,r.primaryLastName){mutableStateOf(r.primaryLastName)}; var count by remember(r.id,r.guestCount){mutableStateOf(r.guestCount.toString())}; var selectedUnit by remember(r.id,r.unitId){mutableStateOf(r.unitId)}; var chooser by remember{mutableStateOf(false)}; var removeConfirm by remember{mutableStateOf(false)}
+    var surname by remember(r.id,r.primaryLastName){mutableStateOf(r.primaryLastName)}; var count by remember(r.id,r.guestCount){mutableStateOf(r.guestCount.toString())}; var selectedUnit by remember(r.id,r.unitId){mutableStateOf(r.unitId)}; var chooser by remember{mutableStateOf(false)}; var removeConfirm by remember{mutableStateOf(false)}; var showGuests by remember{mutableStateOf(false)}
     val u=units.firstOrNull{it.id==selectedUnit}; val valid=(count.toIntOrNull()?:0)>0 && surname.isNotBlank() && (u?.unitGroup=="apartment" || (count.toIntOrNull()?:0) <= (u?.capacity?:0))
     Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(20.dp),border=BorderStroke(1.dp,Color.White.copy(alpha=.06f))) {
         Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
             Text(u?.name ?: r.unitName,fontWeight=FontWeight.Bold,color=PurpleSoft)
-            if(!editable) { Text("خانواده: ${r.primaryLastName.ifBlank{"—"}}");Text("${r.guestCount} نفر",color=TextMuted) }
+            if(!editable) { Text("خانواده: ${r.primaryLastName.ifBlank{"—"}}");Text("${r.guestCount} نفر",color=TextMuted); OutlinedButton(onClick={showGuests=true},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Group,null);Spacer(Modifier.width(6.dp));Text("مشخصات نفر اصلی و همراهان")} }
             else {
                 OutlinedTextField(surname,{surname=it},label={Text("نام خانوادگی اصلی")},modifier=Modifier.fillMaxWidth(),singleLine=true)
                 OutlinedTextField(count,{count=normalizeNumeric(it,3)},label={Text("تعداد نفرات")},supportingText={Text(if(u?.unitGroup=="apartment")"بدون محدودیت ظرفیت" else "ظرفیت: ${u?.capacity ?: 0}")},modifier=Modifier.fillMaxWidth(),singleLine=true)
@@ -481,11 +463,13 @@ private fun ReservationUnitEditCard(vm: AppViewModel, r: Reservation, units: Lis
                     Button(onClick={vm.updateBookingUnit(r.id,selectedUnit,count.toIntOrNull()?:0,surname)},enabled=valid,modifier=Modifier.weight(1f)){Text("ذخیره واحد")}
                     if(canRemove) OutlinedButton(onClick={removeConfirm=true},modifier=Modifier.weight(1f),colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error)){Text("حذف واحد")}
                 }
+                OutlinedButton(onClick={showGuests=true},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Group,null);Spacer(Modifier.width(6.dp));Text("مشخصات نفر اصلی و همراهان")}
             }
         }
     }
     if(chooser) UnitChooserDialog(units.filter{it.unitGroup==r.unitGroup && (it.id==r.unitId || vm.isUnitFree(it.id,start,end))},selectedUnit,{chooser=false},{selectedUnit=it;chooser=false})
     if(removeConfirm) AlertDialog(onDismissRequest={removeConfirm=false},text={Text("این واحد از رزرو کاروانی حذف شود؟")},confirmButton={Button(onClick={removeConfirm=false;vm.removeBookingUnit(r.id)},colors=ButtonDefaults.buttonColors(containerColor=MaterialTheme.colorScheme.error)){Text("حذف")}},dismissButton={TextButton(onClick={removeConfirm=false}){Text("انصراف")}})
+    if(showGuests) ReservationGuestsDialog(vm,r,{showGuests=false})
 }
 
 @Composable
@@ -632,6 +616,97 @@ fun PeopleScreen(vm: AppViewModel, onBack: () -> Unit) {
                         Text("تعداد اقامت: ${person.visitCount}", color = PurpleSoft)
                         if (person.lastDeparture.isNotBlank() && person.lastDeparture != "null") {
                             Text("آخرین خروج: ${runCatching { JalaliCalendar.isoToJalali(person.lastDeparture) }.getOrDefault(person.lastDeparture)}", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReservationGuestsDialog(vm:AppViewModel,r:Reservation,onDismiss:()->Unit){
+    var guests by remember(r.id){mutableStateOf<List<GuestInput>>(emptyList())};var loaded by remember(r.id){mutableStateOf(false)}
+    LaunchedEffect(r.id){vm.reservationGuests(r.id){guests=it;loaded=true}}
+    AlertDialog(onDismissRequest=onDismiss,title={Text("${r.unitName} • خانواده ${r.primaryLastName}")},text={
+        LazyColumn(Modifier.heightIn(max=520.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+            item{Text("ثبت همراهان اختیاری است. نام خانوادگی واحد و تعداد نفرات برای خود رزرو کافی است.",style=MaterialTheme.typography.bodySmall,color=TextMuted)}
+            if(!loaded)item{LinearProgressIndicator(Modifier.fillMaxWidth())}
+            itemsIndexed(guests){i,g->Card(colors=CardDefaults.cardColors(containerColor=NavyCard2),shape=RoundedCornerShape(16.dp)){Column(Modifier.padding(10.dp),verticalArrangement=Arrangement.spacedBy(5.dp)){
+                OutlinedTextField(g.firstName,{v->guests=guests.toMutableList().also{it[i]=g.copy(firstName=v)}},label={Text(if(i==0)"نام نفر اصلی" else "نام همراه")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(g.lastName,{v->guests=guests.toMutableList().also{it[i]=g.copy(lastName=v)}},label={Text("نام خانوادگی")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(g.nationalId,{v->guests=guests.toMutableList().also{it[i]=g.copy(nationalId=normalizeNumeric(v,10))}},label={Text("کد ملی (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(g.phone,{v->guests=guests.toMutableList().also{it[i]=g.copy(phone=normalizeNumeric(v,11))}},label={Text("موبایل (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                TextButton(onClick={guests=guests.toMutableList().also{it.removeAt(i)}}){Text("حذف فرد",color=Pink)}
+            }}}
+            item{OutlinedButton(onClick={guests=guests+GuestInput("",r.primaryLastName,"","")},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.PersonAdd,null);Spacer(Modifier.width(6.dp));Text(if(guests.isEmpty())"ثبت مشخصات نفر اصلی" else "افزودن همراه")}}
+        }
+    },confirmButton={Button(onClick={vm.setReservationGuests(r.id,guests){onDismiss()}},enabled=guests.all{it.lastName.isNotBlank()&&(it.nationalId.isBlank()||it.nationalId.length==10)}){Text("ذخیره مشخصات")}},dismissButton={TextButton(onClick=onDismiss){Text("بستن")}})
+}
+
+@Composable
+fun TodayScreen(vm:AppViewModel,initialMode:String,onBack:()->Unit,onDetail:(String)->Unit){
+    val rs by vm.reservations.collectAsState();val today=LocalDate.now();var mode by remember{mutableStateOf(initialMode)}
+    fun dateActive(r:Reservation)=runCatching{!today.isBefore(LocalDate.parse(r.startDate))&&today.isBefore(LocalDate.parse(r.endDate))}.getOrDefault(false)
+    val filtered=when(mode){
+        "arrivals"->rs.filter{it.startDate==today.toString()}
+        "departures"->rs.filter{it.endDate==today.toString()}
+        "present"->rs.filter{(it.checkInAt.isNotBlank()&&it.checkInAt!="null"&&(it.checkOutAt.isBlank()||it.checkOutAt=="null"))||dateActive(it)}
+        "occupied"->rs.filter(::dateActive)
+        "active"->rs
+        else->rs.filter{it.startDate==today.toString()||it.endDate==today.toString()||dateActive(it)}
+    }
+    val groups=filtered.groupBy{it.bookingGroupId.ifBlank{it.id}}.values.sortedBy{it.minOfOrNull{r->r.startDate}}
+    Scaffold(containerColor=Navy,topBar={DarkTopBar("عملیات امروز",onBack)}){p->LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal=16.dp),verticalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=30.dp)){
+        item{Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("all" to "همه","arrivals" to "ورودی","departures" to "خروجی","present" to "حاضر","active" to "فعال").forEach{(k,l)->FilterChip(selected=mode==k,onClick={mode=k},label={Text(l)})}}}
+        if(groups.isEmpty())item{EmptyCard("موردی برای این بخش وجود ندارد.")}
+        items(groups){rows->BookingCard(rows){onDetail(rows.first().id)}}
+    }}
+}
+
+@Composable
+fun OccupancyScreen(vm:AppViewModel,onBack:()->Unit,onDetail:(String)->Unit){
+    val units by vm.units.collectAsState();val rs by vm.reservations.collectAsState();var start by remember{mutableStateOf(LocalDate.now())};val days=(0..6).map{start.plusDays(it.toLong())}
+    Scaffold(containerColor=Navy,topBar={DarkTopBar("تقویم اشغال واحدها",onBack)}){p->LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal=12.dp),verticalArrangement=Arrangement.spacedBy(9.dp),contentPadding=PaddingValues(bottom=30.dp)){
+        item{Card(colors=CardDefaults.cardColors(containerColor=NavyCard2),shape=RoundedCornerShape(20.dp)){Row(Modifier.fillMaxWidth().padding(10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){TextButton(onClick={start=start.minusDays(7)}){Text("هفته قبل")};Text("${JalaliCalendar.fromGregorian(start).display()} تا ${JalaliCalendar.fromGregorian(start.plusDays(6)).display()}",fontWeight=FontWeight.Bold);TextButton(onClick={start=start.plusDays(7)}){Text("هفته بعد")}}}}
+        item{Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(3.dp)){Spacer(Modifier.width(88.dp));days.forEach{d->Text(JalaliCalendar.fromGregorian(d).day.toString(),modifier=Modifier.weight(1f),style=MaterialTheme.typography.labelSmall,color=TextMuted)}}}
+        items(units){u->Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(3.dp)){Text(u.name,modifier=Modifier.width(88.dp),style=MaterialTheme.typography.bodySmall,maxLines=2);days.forEach{d->val r=rs.firstOrNull{x->x.unitId==u.id&&runCatching{!d.isBefore(LocalDate.parse(x.startDate))&&d.isBefore(LocalDate.parse(x.endDate))}.getOrDefault(false)};Surface(onClick={if(r!=null){{onDetail(r.id)}}else{{}}},modifier=Modifier.weight(1f).height(38.dp),shape=RoundedCornerShape(8.dp),color=if(r==null)Mint.copy(alpha=.16f) else Pink.copy(alpha=.22f)){Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Icon(if(r==null)Icons.Default.Check else Icons.Default.Hotel,null,tint=if(r==null)Mint else Pink,modifier=Modifier.size(17.dp))}}}}}
+        item{InfoCard("راهنما","سبز = آزاد • صورتی = رزرو. روی خانه رزروشده بزنید تا جزئیات باز شود. روز خروج آزاد محسوب می‌شود.")}
+    }}
+}
+
+@Composable
+fun GlobalSearchScreen(vm:AppViewModel,onBack:()->Unit,onDetail:(String)->Unit){
+    val rs by vm.reservations.collectAsState()
+    var query by remember{mutableStateOf("")}
+    var people by remember{mutableStateOf<List<PersonLookup>>(emptyList())}
+    var searched by remember{mutableStateOf(false)}
+    val local = if(query.trim().length < 2) emptyList() else rs
+        .filter { r -> listOf(r.primaryLastName,r.title,r.leaderName,r.leaderPhone,r.unitName).any { it.contains(query.trim(),ignoreCase=true) } }
+        .groupBy { it.bookingGroupId.ifBlank { it.id } }.values.toList()
+    Scaffold(containerColor=Navy,topBar={DarkTopBar("جستجوی سراسری",onBack)}) { p ->
+        LazyColumn(Modifier.padding(p).fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            item { OutlinedTextField(query,{query=it},label={Text("نام، فامیل، موبایل یا کد ملی")},leadingIcon={Icon(Icons.Default.Search,null)},modifier=Modifier.fillMaxWidth(),singleLine=true) }
+            item {
+                Button(onClick={
+                    searched=true
+                    val q=normalizeNumeric(query)
+                    val mode=when { q.length==10 -> "national"; q.length>=7 && q.all{it.isDigit()} -> "phone"; else -> "last_name" }
+                    vm.searchPeople(mode,if(mode=="last_name")query.trim() else q){people=it}
+                },enabled=query.trim().length>=2,modifier=Modifier.fillMaxWidth()){Text("جستجو")}
+            }
+            if(searched){
+                item { Text("رزروها",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold) }
+                if(local.isEmpty()) item { Text("رزروی پیدا نشد",color=TextMuted) }
+                items(local){ rows -> BookingCard(rows){onDetail(rows.first().id)} }
+                item { Text("زائران و سوابق",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold) }
+                if(people.isEmpty()) item { Text("سابقه‌ای پیدا نشد",color=TextMuted) }
+                items(people){ person ->
+                    Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(18.dp)){
+                        Column(Modifier.padding(12.dp)){
+                            Text("${person.firstName} ${person.lastName}",fontWeight=FontWeight.Bold)
+                            if(person.phone.isNotBlank()) Text(person.phone,color=TextMuted)
+                            Text("${person.visitCount} اقامت",color=PurpleSoft)
                         }
                     }
                 }

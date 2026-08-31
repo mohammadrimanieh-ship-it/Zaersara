@@ -141,6 +141,23 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
             .onFailure { handleFailure(it) }
     }
 
+    fun markBookingStatus(groupId: String, action: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().markBookingStatus(groupId, action) }
+            .onSuccess { _busy.value = false; refresh(); viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
+    }
+
+    fun reservationGuests(reservationId: String, onResult: (List<GuestInput>) -> Unit) = viewModelScope.launch(Dispatchers.IO) {
+        val result = runCatching { repo().reservationGuests(reservationId) }.getOrElse { _message.value = it.message; emptyList() }
+        viewModelScope.launch(Dispatchers.Main) { onResult(result) }
+    }
+
+    fun setReservationGuests(reservationId: String, guests: List<GuestInput>, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().setReservationGuests(reservationId, guests) }
+            .onSuccess { _busy.value = false; viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
+    }
+
     fun lookupPerson(id: String, onResult: (PersonLookup?) -> Unit) = viewModelScope.launch(Dispatchers.IO) {
         val result = runCatching { repo().lookupPerson(id) }.getOrNull(); viewModelScope.launch(Dispatchers.Main) { onResult(result) }
     }
