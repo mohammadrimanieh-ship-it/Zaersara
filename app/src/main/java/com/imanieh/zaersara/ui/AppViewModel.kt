@@ -49,27 +49,23 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
     }
 
     fun isUnitFree(unitId: String, start: LocalDate, end: LocalDate, excludeReservationId: String? = null): Boolean = _reservations.value.none { r ->
-        if (r.unitId != unitId || r.id == excludeReservationId) false else {
+        if (r.unitId != unitId || r.id == excludeReservationId || (r.checkOutAt.isNotBlank() && r.checkOutAt != "null")) false else {
             val rs = runCatching { LocalDate.parse(r.startDate) }.getOrNull()
             val re = runCatching { LocalDate.parse(r.endDate) }.getOrNull()
             rs != null && re != null && start.isBefore(re) && end.isAfter(rs)
         }
     }
 
-    fun suggestions(start: LocalDate, end: LocalDate, people: Int, caravan: Boolean): List<UnitSuggestion> {
+    fun suggestions(start: LocalDate, end: LocalDate, people: Int, caravan: Boolean, allowExtraCapacity: Boolean = false): List<UnitSuggestion> {
         if (people <= 0 || !end.isAfter(start)) return emptyList()
-        val available = _units.value.filter { u -> isUnitFree(u.id, start, end) && (u.unitGroup == "apartment" || (u.capacityConfigured && u.capacity > 0)) }
+        val available = _units.value.filter { u -> u.unitGroup != "apartment" && isUnitFree(u.id, start, end) && u.capacityConfigured && u.capacity > 0 }
         val out = mutableListOf<UnitSuggestion>()
         for ((group, groupUnits) in available.groupBy { it.unitGroup }) {
-            if (group == "apartment") {
-                groupUnits.forEach { out += UnitSuggestion(group, listOf(it), listOf(people), 0) }
-                continue
-            }
             if (!caravan) {
-                groupUnits.filter { it.capacity >= people }
-                    .sortedWith(compareBy<UnitItem> { it.capacity - people }.thenBy { it.capacity })
+                groupUnits.filter { it.capacity >= people || allowExtraCapacity }
+                    .sortedWith(compareBy<UnitItem> { kotlin.math.abs(it.capacity - people) }.thenByDescending { it.capacity })
                     .take(3)
-                    .forEach { out += UnitSuggestion(group, listOf(it), listOf(people), it.capacity - people) }
+                    .forEach { out += UnitSuggestion(group, listOf(it), listOf(people), kotlin.math.max(0, it.capacity - people)) }
             } else {
                 val sorted = groupUnits.sortedByDescending { it.capacity }
                 val combos = mutableListOf<List<UnitItem>>()
@@ -90,7 +86,7 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
                     }
             }
         }
-        val priority = mapOf("original" to 0, "fatemiyeh" to 1, "apartment" to 2)
+        val priority = mapOf("original" to 0, "fatemiyeh" to 1)
         return out.sortedWith(compareBy<UnitSuggestion> { priority[it.group] ?: 9 }.thenBy { it.spareCapacity }.thenBy { it.units.size })
     }
 
@@ -98,8 +94,7 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
         val free = _units.value.filter { isUnitFree(it.id, start, end) }
         return mapOf(
             "original" to free.filter { it.unitGroup == "original" }.sumOf { it.capacity },
-            "fatemiyeh" to free.filter { it.unitGroup == "fatemiyeh" }.sumOf { it.capacity },
-            "apartment" to if (free.any { it.unitGroup == "apartment" }) null else 0
+            "fatemiyeh" to free.filter { it.unitGroup == "fatemiyeh" }.sumOf { it.capacity }
         )
     }
 
@@ -165,6 +160,12 @@ class AppViewModel(app: Application): AndroidViewModel(app) {
     fun searchPeople(mode: String, query: String, onResult: (List<PersonLookup>) -> Unit) = viewModelScope.launch(Dispatchers.IO) {
         val result = runCatching { repo().searchPeople(mode, query) }.getOrElse { _message.value = it.message; emptyList() }
         viewModelScope.launch(Dispatchers.Main) { onResult(result) }
+    }
+
+    fun updatePersonNotes(personId: String, personalNotes: String, disciplineNotes: String, onOk: () -> Unit = {}) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { _busy.value = true; repo().updatePersonNotes(personId, personalNotes, disciplineNotes) }
+            .onSuccess { _busy.value = false; viewModelScope.launch(Dispatchers.Main) { onOk() } }
+            .onFailure { handleFailure(it) }
     }
 
     fun updateUnitCapacity(unitId: String, capacity: Int) = viewModelScope.launch(Dispatchers.IO) {

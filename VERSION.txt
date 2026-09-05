@@ -1,3 +1,2 @@
-Zaersara Mashhad v0.7.0
-versionCode=11
-applicationId=com.imanieh.zaersara
+Zaersara Mashhad v0.8.0
+versionCode=12

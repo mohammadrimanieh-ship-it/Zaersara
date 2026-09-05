@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -36,6 +37,7 @@ import com.imanieh.zaersara.model.*
 import com.imanieh.zaersara.util.JalaliCalendar
 import com.imanieh.zaersara.util.JalaliDate
 import com.imanieh.zaersara.util.normalizeNumeric
+import com.imanieh.zaersara.util.ReportExport
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -176,12 +178,12 @@ fun HomeScreen(
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     LaunchedEffect(Unit) { while (true) { now = LocalDateTime.now(); delay(1000) } }
     val today = now.toLocalDate()
-    fun activeToday(r: Reservation) = runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false)
+    fun activeToday(r: Reservation) = (r.checkOutAt.isBlank() || r.checkOutAt == "null") && runCatching { !today.isBefore(LocalDate.parse(r.startDate)) && today.isBefore(LocalDate.parse(r.endDate)) }.getOrDefault(false)
     val occupied = units.count { u -> rs.any { it.unitId == u.id && activeToday(it) } }
     val checkedInRows = rs.filter { it.checkInAt.isNotBlank() && it.checkInAt != "null" && (it.checkOutAt.isBlank() || it.checkOutAt == "null") }
     val todayGuests = if (checkedInRows.isNotEmpty()) checkedInRows.sumOf { it.guestCount } else rs.filter(::activeToday).sumOf { it.guestCount }
     val todayArrivals = rs.filter { it.startDate == today.toString() }.map { it.bookingGroupId.ifBlank { it.id } }.distinct().size
-    val activeBookings = rs.map { it.bookingGroupId.ifBlank { it.id } }.distinct().size
+    val activeBookings = rs.filter { (it.checkOutAt.isBlank() || it.checkOutAt == "null") && runCatching { !LocalDate.parse(it.endDate).isBefore(today) }.getOrDefault(true) }.map { it.bookingGroupId.ifBlank { it.id } }.distinct().size
     val j = JalaliCalendar.fromGregorian(today)
     val dayName = listOf("دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یکشنبه")[today.dayOfWeek.value - 1]
     val timeText = now.format(DateTimeFormatter.ofPattern("HH:mm"))
@@ -260,6 +262,7 @@ private fun BookingCard(rows: List<Reservation>, onClick: () -> Unit) {
                 Surface(shape = RoundedCornerShape(14.dp), color = Purple.copy(alpha=.16f)) { Text("$totalGuests نفر", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = PurpleSoft) }
             }
             Text("ورود: ${JalaliCalendar.isoToJalali(first.startDate)}   •   خروج: ${JalaliCalendar.isoToJalali(first.endDate)}", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+            if(first.checkInAt.isNotBlank() && first.checkInAt!="null") Text("ساعت ورود: ${formatServerTime(first.checkInAt)}${if(first.checkOutAt.isNotBlank()&&first.checkOutAt!="null") " • ساعت خروج: ${formatServerTime(first.checkOutAt)}" else ""}",style=MaterialTheme.typography.bodySmall,color=Mint)
             if (rows.size > 1) Text("${rows.size} واحد در یک مجموعه", style = MaterialTheme.typography.labelMedium, color = Gold)
         }
     }
@@ -275,9 +278,16 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
     var title by remember { mutableStateOf("") }; var leader by remember { mutableStateOf("") }; var phone by remember { mutableStateOf("") }
     var paid by remember { mutableStateOf(false) }; var paymentStatus by remember { mutableStateOf("پرداخت شده") }; var amount by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }
     var familyNames by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var allocationTexts by remember { mutableStateOf<Map<String,String>>(emptyMap()) }; var unitGuests by remember { mutableStateOf<Map<String,List<GuestInput>>>(emptyMap()) }; var editingUnitId by remember { mutableStateOf<String?>(null) }
+    var allowExtraCapacity by remember { mutableStateOf(false) }
+    var extraCaps by remember { mutableStateOf<Map<String,String>>(emptyMap()) }
+    var roomGenders by remember { mutableStateOf<Map<String,String>>(emptyMap()) }
+    var mahramNotes by remember { mutableStateOf<Map<String,String>>(emptyMap()) }
+    var serviceType by remember { mutableStateOf("stay_no_food") }
+    var breakfast by remember { mutableStateOf("") }; var lunch by remember { mutableStateOf("") }; var dinner by remember { mutableStateOf("") }
+    var paymentKind by remember { mutableStateOf("free") }; var giftDescription by remember { mutableStateOf("") }
     val people = peopleText.toIntOrNull() ?: 0
     val dateOk = startDate != null && endDate != null && endDate!!.isAfter(startDate!!)
-    val suggestions = remember(startDate,endDate,people,caravan,searched,units,rs) { if (searched && dateOk && people>0) vm.suggestions(startDate!!,endDate!!,people,caravan) else emptyList() }
+    val suggestions = remember(startDate,endDate,people,caravan,allowExtraCapacity,searched,units,rs) { if (searched && dateOk && people>0) vm.suggestions(startDate!!,endDate!!,people,caravan,allowExtraCapacity) else emptyList() }
     val cap = remember(startDate,endDate,units,rs,searched) { if (searched && dateOk) vm.availableCapacityByGroup(startDate!!,endDate!!) else emptyMap() }
 
     Scaffold(containerColor = Navy, topBar = { DarkTopBar("رزرو جدید", onDone) }) { p ->
@@ -297,16 +307,17 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
             }
             item { OutlinedTextField(peopleText, { peopleText=normalizeNumeric(it,3); searched=false; selected=null; stage=1 }, label={Text("تعداد نفرات")}, modifier=Modifier.fillMaxWidth(), singleLine=true) }
             item { Row(verticalAlignment = Alignment.CenterVertically) { Switch(caravan,{caravan=it;searched=false;selected=null;stage=1}); Spacer(Modifier.width(10.dp)); Column { Text(if(caravan) "رزرو کاروانی" else "رزرو خانوادگی / فردی", fontWeight=FontWeight.Medium); Text(if(caravan) "چند واحد فقط از یک مجموعه" else "یک واحد به یک خانواده اختصاص می‌یابد", style=MaterialTheme.typography.bodySmall, color=TextMuted) } } }
+            item { Row(verticalAlignment = Alignment.CenterVertically) { Switch(allowExtraCapacity,{allowExtraCapacity=it;searched=false;selected=null;stage=1}); Spacer(Modifier.width(10.dp)); Column { Text("ظرفیت اضافه برای این رزرو",fontWeight=FontWeight.Medium); Text("در صورت نیاز می‌توان ظرفیت همین رزرو را افزایش داد؛ ظرفیت ثابت واحد تغییر نمی‌کند.",style=MaterialTheme.typography.bodySmall,color=TextMuted) } } }
             item { Button(onClick={searched=true;selected=null;stage=2}, enabled=dateOk&&people>0, modifier=Modifier.fillMaxWidth()) { Text("پیشنهاد واحدهای خالی") } }
             if (searched) {
                 item { StepHeader("۲", "انتخاب پیشنهاد", "هر واحد در یک بازه فقط به یک خانواده یا کاروان اختصاص دارد.") }
                 if (suggestions.isEmpty()) item { EmptyCard("هیچ واحد یا ترکیب خالی با ظرفیت کافی پیدا نشد.") }
                 if (caravan && dateOk) item {
                     val originalCap = cap["original"] ?: 0; val fatCap = cap["fatemiyeh"] ?: 0
-                    InfoCard("ظرفیت آزاد این بازه", "زائرسرا: $originalCap نفر • فاطمیه: $fatCap نفر${if (cap["apartment"] == null) " • آپارتمان خالی موجود است" else ""}")
+                    InfoCard("ظرفیت آزاد این بازه", "زائرسرا: $originalCap نفر • فاطمیه: $fatCap نفر")
                 }
                 itemsIndexed(suggestions) { index, s -> SuggestionCard(s, selected==s, {
-                    selected=s; familyNames=s.units.associate { it.id to "" }; allocationTexts=s.units.zip(s.allocations).associate { it.first.id to it.second.toString() }
+                    selected=s; familyNames=s.units.associate { it.id to "" }; allocationTexts=s.units.zip(s.allocations).associate { it.first.id to it.second.toString() }; extraCaps=s.units.associate { it.id to kotlin.math.max(0, people-it.capacity).toString() }; roomGenders=s.units.associate { it.id to "family" }; mahramNotes=s.units.associate { it.id to "" }
                 }, index==0) }
                 if (selected != null) item {
                     Button(onClick={stage=3}, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.ArrowForward, null); Spacer(Modifier.width(8.dp)); Text("ادامه و ثبت اطلاعات") }
@@ -316,12 +327,16 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                 item { StepHeader("۳", "اطلاعات رزرو", "برای هر واحد فقط نام خانوادگی و تعداد نفرات لازم است.") }
                 if (caravan) item { OutlinedTextField(title,{title=it},label={Text("عنوان کاروان (اختیاری)")},modifier=Modifier.fillMaxWidth()) }
                 items(selected!!.units) { u ->
-                    val maxCap = if (u.unitGroup=="apartment") null else u.capacity
+                    val maxCap = u.capacity
                     Card(colors=CardDefaults.cardColors(containerColor=NavyCard2), shape=RoundedCornerShape(20.dp)) {
                         Column(Modifier.padding(14.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {
                             Text(u.name, fontWeight=FontWeight.Bold, color=PurpleSoft)
                             OutlinedTextField(familyNames[u.id].orEmpty(), { v -> familyNames=familyNames.toMutableMap().also{it[u.id]=v} }, label={Text("نام خانوادگی اصلی")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
-                            OutlinedTextField(allocationTexts[u.id].orEmpty(), { v -> allocationTexts=allocationTexts.toMutableMap().also{it[u.id]=normalizeNumeric(v,3)} }, label={Text("تعداد نفرات")}, supportingText={Text(if(maxCap==null) "بدون محدودیت ظرفیت" else "ظرفیت واحد: $maxCap نفر")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
+                            OutlinedTextField(allocationTexts[u.id].orEmpty(), { v -> allocationTexts=allocationTexts.toMutableMap().also{it[u.id]=normalizeNumeric(v,3)} }, label={Text("تعداد نفرات")}, supportingText={Text("ظرفیت پایه: $maxCap نفر")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
+                            if(allowExtraCapacity) OutlinedTextField(extraCaps[u.id].orEmpty(),{v->extraCaps=extraCaps.toMutableMap().also{it[u.id]=normalizeNumeric(v,2)}},label={Text("ظرفیت اضافه این رزرو")},supportingText={Text("فقط برای همین رزرو؛ ظرفیت اصلی واحد تغییر نمی‌کند")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                            Text("اتاق‌بندی",fontWeight=FontWeight.Medium)
+                            Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("family" to "خانوادگی","male" to "آقایان","female" to "بانوان","mixed" to "ترکیبی").forEach{(k,l)->FilterChip(selected=(roomGenders[u.id]?:"family")==k,onClick={roomGenders=roomGenders.toMutableMap().also{it[u.id]=k}},label={Text(l)})}}
+                            OutlinedTextField(mahramNotes[u.id].orEmpty(),{v->mahramNotes=mahramNotes.toMutableMap().also{it[u.id]=v}},label={Text("توضیح محرمیت / اتاق‌بندی")},modifier=Modifier.fillMaxWidth(),minLines=2)
                             OutlinedButton(onClick={editingUnitId=u.id}, modifier=Modifier.fillMaxWidth()) {
                                 Icon(Icons.Default.Group,null); Spacer(Modifier.width(6.dp));
                                 Text(if((unitGuests[u.id] ?: emptyList()).isEmpty()) "ثبت مشخصات نفر اصلی و همراهان" else "مشخصات افراد (${unitGuests[u.id]!!.size})")
@@ -331,18 +346,23 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                 }
                 item { OutlinedTextField(leader,{leader=it},label={Text("نام سرپرست (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true) }
                 item { OutlinedTextField(phone,{phone=normalizeNumeric(it,11)},label={Text("شماره موبایل سرپرست (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true) }
-                item { Row(verticalAlignment=Alignment.CenterVertically) { Switch(paid,{paid=it}); Spacer(Modifier.width(10.dp)); Text(if(paid) "اقامت پولی" else "اقامت رایگان",fontWeight=FontWeight.Medium) } }
-                if (paid) item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedTextField(amount,{amount=normalizeNumeric(it)},label={Text("مبلغ کل (تومان)")},modifier=Modifier.fillMaxWidth(),singleLine=true); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { FilterChip(selected=paymentStatus=="پرداخت شده",onClick={paymentStatus="پرداخت شده"},label={Text("پرداخت شده")}); FilterChip(selected=paymentStatus=="بدهکار",onClick={paymentStatus="بدهکار"},label={Text("بدهکار")}) } } }
+                item { Text("نوع خدمت",fontWeight=FontWeight.Bold) }
+                item { Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("stay_no_food" to "اقامت بدون غذا","stay_with_food" to "اقامت با غذا").forEach{(k,l)->FilterChip(selected=serviceType==k,onClick={serviceType=k},label={Text(l)})}} }
+                if(serviceType=="stay_with_food") item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)){ Text("تعداد وعده‌ها",fontWeight=FontWeight.Medium); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedTextField(breakfast,{breakfast=normalizeNumeric(it,3)},label={Text("صبحانه")},modifier=Modifier.weight(1f),singleLine=true);OutlinedTextField(lunch,{lunch=normalizeNumeric(it,3)},label={Text("ناهار")},modifier=Modifier.weight(1f),singleLine=true);OutlinedTextField(dinner,{dinner=normalizeNumeric(it,3)},label={Text("شام")},modifier=Modifier.weight(1f),singleLine=true)}; Text("تعداد هر وعده می‌تواند بیشتر از تعداد اقامت‌کنندگان باشد.",style=MaterialTheme.typography.bodySmall,color=TextMuted) } }
+                item { Text("وضعیت مالی",fontWeight=FontWeight.Bold) }
+                item { Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("free" to "رایگان","paid" to "پرداخت وجه","gift" to "هدیه").forEach{(k,l)->FilterChip(selected=paymentKind==k,onClick={paymentKind=k;paid=k=="paid"},label={Text(l)})}} }
+                if (paymentKind=="paid") item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedTextField(amount,{amount=normalizeNumeric(it)},label={Text("مبلغ کل (تومان)")},modifier=Modifier.fillMaxWidth(),singleLine=true); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { FilterChip(selected=paymentStatus=="پرداخت شده",onClick={paymentStatus="پرداخت شده"},label={Text("پرداخت شده")}); FilterChip(selected=paymentStatus=="بدهکار",onClick={paymentStatus="بدهکار"},label={Text("بدهکار")}) } } }
+                if(paymentKind=="gift") item { OutlinedTextField(giftDescription,{giftDescription=it},label={Text("توضیح هدیه")},modifier=Modifier.fillMaxWidth(),minLines=2) }
                 item { OutlinedTextField(notes,{notes=it},label={Text("توضیحات")},modifier=Modifier.fillMaxWidth(),minLines=2) }
                 val s=selected!!
-                val plan=s.units.map { u -> PlanUnit(u.id, allocationTexts[u.id]?.toIntOrNull() ?: 0, familyNames[u.id].orEmpty().trim(), unitGuests[u.id] ?: emptyList()) }
-                val namesOk=plan.all{it.familyLastName.isNotBlank()}; val countsOk=plan.all { p0 -> p0.guestCount>0 && (s.units.first{it.id==p0.unitId}.unitGroup=="apartment" || p0.guestCount<=s.units.first{it.id==p0.unitId}.capacity) }
-                val totalOk=plan.sumOf{it.guestCount}==people; val amountOk=!paid || (amount.toLongOrNull()?:0)>0
+                val plan=s.units.map { u -> PlanUnit(u.id, allocationTexts[u.id]?.toIntOrNull() ?: 0, familyNames[u.id].orEmpty().trim(), unitGuests[u.id] ?: emptyList(), extraCaps[u.id]?.toIntOrNull()?:0, roomGenders[u.id]?:"family", mahramNotes[u.id].orEmpty(), serviceType, breakfast.toIntOrNull()?:0, lunch.toIntOrNull()?:0, dinner.toIntOrNull()?:0, paymentKind, giftDescription.trim()) }
+                val namesOk=plan.all{it.familyLastName.isNotBlank()}; val countsOk=plan.all { p0 -> p0.guestCount>0 && p0.guestCount<=s.units.first{it.id==p0.unitId}.capacity+p0.extraCapacity }
+                val totalOk=plan.sumOf{it.guestCount}==people; val amountOk=paymentKind!="paid" || (amount.toLongOrNull()?:0)>0
                 item {
                     if(!totalOk) Text("جمع تعداد نفرات واحدها باید دقیقاً $people نفر باشد.",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
                     Button(onClick={
                         val autoTitle = title.trim().ifBlank { if (plan.size==1) "خانواده ${plan.first().familyLastName}" else "رزرو کاروانی" }
-                        vm.createBooking(autoTitle,startDate.toString(),endDate.toString(),if(caravan)"caravan" else "family",leader.trim(),phone,paid,amount.toLongOrNull()?:0L,if(paid)paymentStatus else "رایگان",notes.trim(),plan,emptyList(),onDone)
+                        vm.createBooking(autoTitle,startDate.toString(),endDate.toString(),if(caravan)"caravan" else "family",leader.trim(),phone,paymentKind=="paid",amount.toLongOrNull()?:0L,if(paymentKind=="paid")paymentStatus else if(paymentKind=="gift")"هدیه" else "رایگان",notes.trim(),plan,emptyList(),onDone)
                     }, enabled=namesOk&&countsOk&&totalOk&&amountOk, modifier=Modifier.fillMaxWidth()) { Text("ثبت نهایی رزرو") }
                 }
             }
@@ -388,7 +408,7 @@ private fun SuggestionCard(s: UnitSuggestion, selected: Boolean, onSelect: () ->
     Card(onClick=onSelect, modifier=Modifier.fillMaxWidth().animateContentSize(), colors=CardDefaults.cardColors(containerColor=bg), shape=RoundedCornerShape(22.dp), border=BorderStroke(1.dp, if(selected) Purple else Color.White.copy(alpha=.06f))) {
         Column(Modifier.padding(15.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) { Text(groupName(s.group),fontWeight=FontWeight.Bold); if(best) SuggestionBadge("پیشنهاد بهتر") }
-            s.units.zip(s.allocations).forEach { (u,n) -> Text(if(u.unitGroup=="apartment") "${u.name} • $n نفر • بدون محدودیت ظرفیت" else "${u.name} • $n نفر از ظرفیت ${u.capacity}") }
+            s.units.zip(s.allocations).forEach { (u,n) -> Text("${u.name} • $n نفر از ظرفیت ${u.capacity}") }
             if(selected) Row(verticalAlignment=Alignment.CenterVertically) { Icon(Icons.Default.CheckCircle,null,tint=Mint,modifier=Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("انتخاب شد",color=Mint,fontWeight=FontWeight.Bold) }
         }
     }
@@ -412,6 +432,11 @@ fun ReservationDetailsScreen(vm: AppViewModel, reservationId: String, onBack: ()
                     Text(first.title.ifBlank { if(first.reservationType=="caravan") "رزرو کاروانی" else "خانواده ${first.primaryLastName}" },style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
                     Text("ورود ${JalaliCalendar.fromGregorian(start).display()}  •  خروج ${JalaliCalendar.fromGregorian(end).display()}",color=TextMuted)
                     Text("${rows.sumOf{it.guestCount}} نفر • ${rows.size} واحد",color=PurpleSoft,fontWeight=FontWeight.Medium)
+                    if(first.registeredAt.isNotBlank()&&first.registeredAt!="null") Text("ثبت رزرو: ${formatServerDateTime(first.registeredAt)}",style=MaterialTheme.typography.bodySmall,color=TextMuted)
+                    if(first.checkInAt.isNotBlank()&&first.checkInAt!="null") Text("ساعت ورود: ${formatServerTime(first.checkInAt)}",style=MaterialTheme.typography.bodySmall,color=Mint)
+                    if(first.checkOutAt.isNotBlank()&&first.checkOutAt!="null") Text("ساعت خروج: ${formatServerTime(first.checkOutAt)}",style=MaterialTheme.typography.bodySmall,color=Gold)
+                    Text("خدمت: ${serviceTypeLabel(first.serviceType)} • مالی: ${paymentKindLabel(first.paymentKind)}",style=MaterialTheme.typography.bodySmall,color=PurpleSoft)
+                    if(first.serviceType=="stay_with_food") Text("صبحانه ${rows.sumOf{it.breakfastCount}} • ناهار ${rows.sumOf{it.lunchCount}} • شام ${rows.sumOf{it.dinnerCount}}",style=MaterialTheme.typography.bodySmall,color=TextMuted)
                 } }
             }
             if(edit) {
@@ -450,14 +475,14 @@ fun ReservationDetailsScreen(vm: AppViewModel, reservationId: String, onBack: ()
 @Composable
 private fun ReservationUnitEditCard(vm: AppViewModel, r: Reservation, units: List<UnitItem>, start: LocalDate, end: LocalDate, editable: Boolean, canRemove: Boolean) {
     var surname by remember(r.id,r.primaryLastName){mutableStateOf(r.primaryLastName)}; var count by remember(r.id,r.guestCount){mutableStateOf(r.guestCount.toString())}; var selectedUnit by remember(r.id,r.unitId){mutableStateOf(r.unitId)}; var chooser by remember{mutableStateOf(false)}; var removeConfirm by remember{mutableStateOf(false)}; var showGuests by remember{mutableStateOf(false)}
-    val u=units.firstOrNull{it.id==selectedUnit}; val valid=(count.toIntOrNull()?:0)>0 && surname.isNotBlank() && (u?.unitGroup=="apartment" || (count.toIntOrNull()?:0) <= (u?.capacity?:0))
+    val u=units.firstOrNull{it.id==selectedUnit}; val valid=(count.toIntOrNull()?:0)>0 && surname.isNotBlank() && (count.toIntOrNull()?:0) <= (u?.capacity?:0)+r.extraCapacity
     Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(20.dp),border=BorderStroke(1.dp,Color.White.copy(alpha=.06f))) {
         Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
             Text(u?.name ?: r.unitName,fontWeight=FontWeight.Bold,color=PurpleSoft)
-            if(!editable) { Text("خانواده: ${r.primaryLastName.ifBlank{"—"}}");Text("${r.guestCount} نفر",color=TextMuted); OutlinedButton(onClick={showGuests=true},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Group,null);Spacer(Modifier.width(6.dp));Text("مشخصات نفر اصلی و همراهان")} }
+            if(!editable) { Text("خانواده: ${r.primaryLastName.ifBlank{"—"}}");Text("${r.guestCount} نفر${if(r.extraCapacity>0) " • ظرفیت اضافه +${r.extraCapacity}" else ""}",color=TextMuted); Text("اتاق‌بندی: ${roomGenderLabel(r.roomGender)}",color=PurpleSoft); if(r.mahramNotes.isNotBlank()) Text("محرمیت: ${r.mahramNotes}",style=MaterialTheme.typography.bodySmall,color=TextMuted); OutlinedButton(onClick={showGuests=true},modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Group,null);Spacer(Modifier.width(6.dp));Text("مشخصات نفر اصلی و همراهان")} }
             else {
                 OutlinedTextField(surname,{surname=it},label={Text("نام خانوادگی اصلی")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                OutlinedTextField(count,{count=normalizeNumeric(it,3)},label={Text("تعداد نفرات")},supportingText={Text(if(u?.unitGroup=="apartment")"بدون محدودیت ظرفیت" else "ظرفیت: ${u?.capacity ?: 0}")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                OutlinedTextField(count,{count=normalizeNumeric(it,3)},label={Text("تعداد نفرات")},supportingText={Text("ظرفیت مجاز: ${(u?.capacity ?: 0)+r.extraCapacity} نفر")},modifier=Modifier.fillMaxWidth(),singleLine=true)
                 OutlinedButton(onClick={chooser=true},modifier=Modifier.fillMaxWidth()){Text("تغییر واحد")}
                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                     Button(onClick={vm.updateBookingUnit(r.id,selectedUnit,count.toIntOrNull()?:0,surname)},enabled=valid,modifier=Modifier.weight(1f)){Text("ذخیره واحد")}
@@ -475,12 +500,12 @@ private fun ReservationUnitEditCard(vm: AppViewModel, r: Reservation, units: Lis
 @Composable
 private fun AddUnitDialog(vm: AppViewModel, gid: String, group: String, start: LocalDate, end: LocalDate, units: List<UnitItem>, onDismiss: () -> Unit) {
     val free=units.filter{it.unitGroup==group && vm.isUnitFree(it.id,start,end)}; var selected by remember{mutableStateOf(free.firstOrNull()?.id.orEmpty())}; var surname by remember{mutableStateOf("")}; var count by remember{mutableStateOf("")}; val u=free.firstOrNull{it.id==selected}
-    AlertDialog(onDismissRequest=onDismiss,title={Text("افزودن واحد")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){if(free.isEmpty())Text("واحد خالی دیگری در این مجموعه وجود ندارد.") else {Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){free.forEach{FilterChip(selected=selected==it.id,onClick={selected=it.id},label={Text(it.name)})}};OutlinedTextField(surname,{surname=it},label={Text("نام خانوادگی")},modifier=Modifier.fillMaxWidth());OutlinedTextField(count,{count=normalizeNumeric(it,3)},label={Text("تعداد نفرات")},supportingText={Text(if(u?.unitGroup=="apartment")"بدون محدودیت" else "ظرفیت: ${u?.capacity ?: 0}")},modifier=Modifier.fillMaxWidth())}}},confirmButton={val n=count.toIntOrNull()?:0;Button(onClick={vm.addBookingUnit(gid,selected,n,surname,onDismiss)},enabled=selected.isNotBlank()&&surname.isNotBlank()&&n>0&&(u?.unitGroup=="apartment"||n<=(u?.capacity?:0))){Text("افزودن")}},dismissButton={TextButton(onClick=onDismiss){Text("انصراف")}})
+    AlertDialog(onDismissRequest=onDismiss,title={Text("افزودن واحد")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){if(free.isEmpty())Text("واحد خالی دیگری در این مجموعه وجود ندارد.") else {Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){free.forEach{FilterChip(selected=selected==it.id,onClick={selected=it.id},label={Text(it.name)})}};OutlinedTextField(surname,{surname=it},label={Text("نام خانوادگی")},modifier=Modifier.fillMaxWidth());OutlinedTextField(count,{count=normalizeNumeric(it,3)},label={Text("تعداد نفرات")},supportingText={Text("ظرفیت: ${u?.capacity ?: 0}")},modifier=Modifier.fillMaxWidth())}}},confirmButton={val n=count.toIntOrNull()?:0;Button(onClick={vm.addBookingUnit(gid,selected,n,surname,onDismiss)},enabled=selected.isNotBlank()&&surname.isNotBlank()&&n>0&&n<=(u?.capacity?:0)){Text("افزودن")}},dismissButton={TextButton(onClick=onDismiss){Text("انصراف")}})
 }
 
 @Composable
 private fun UnitChooserDialog(units: List<UnitItem>, selected: String, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
-    AlertDialog(onDismissRequest=onDismiss,title={Text("انتخاب واحد")},text={LazyColumn(verticalArrangement=Arrangement.spacedBy(6.dp),modifier=Modifier.heightIn(max=360.dp)){items(units){u->Card(onClick={onSelect(u.id)},colors=CardDefaults.cardColors(containerColor=if(selected==u.id)Color(0xFF30265A)else NavyCard2)){Row(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween){Text(u.name);Text(if(u.unitGroup=="apartment")"نامحدود" else "${u.capacity} نفر",color=TextMuted)}}}}},confirmButton={TextButton(onClick=onDismiss){Text("بستن")}})
+    AlertDialog(onDismissRequest=onDismiss,title={Text("انتخاب واحد")},text={LazyColumn(verticalArrangement=Arrangement.spacedBy(6.dp),modifier=Modifier.heightIn(max=360.dp)){items(units){u->Card(onClick={onSelect(u.id)},colors=CardDefaults.cardColors(containerColor=if(selected==u.id)Color(0xFF30265A)else NavyCard2)){Row(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween){Text(u.name);Text("${u.capacity} نفر",color=TextMuted)}}}}},confirmButton={TextButton(onClick=onDismiss){Text("بستن")}})
 }
 
 @Composable
@@ -490,6 +515,9 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
     var draftFrom by remember { mutableStateOf<LocalDate?>(null) }
     var draftTo by remember { mutableStateOf<LocalDate?>(null) }
     var draftGroup by remember { mutableStateOf("all") }
+    var draftService by remember { mutableStateOf("all") }
+    var appliedService by remember { mutableStateOf("all") }
+    val context = LocalContext.current
     var appliedFrom by remember { mutableStateOf<LocalDate?>(null) }
     var appliedTo by remember { mutableStateOf<LocalDate?>(null) }
     var appliedGroup by remember { mutableStateOf("all") }
@@ -502,7 +530,8 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
         val e = runCatching { LocalDate.parse(r.endDate) }.getOrNull() ?: return@filter false
         (appliedFrom == null || e.isAfter(appliedFrom)) &&
             (appliedTo == null || !s.isAfter(appliedTo)) &&
-            (appliedGroup == "all" || r.unitGroup == appliedGroup)
+            (appliedGroup == "all" || r.unitGroup == appliedGroup) &&
+            (appliedService == "all" || r.serviceType == appliedService)
     }
     val bookings = filtered.map { it.bookingGroupId.ifBlank { it.id } }.distinct().size
     val guests = filtered.sumOf { it.guestCount }
@@ -525,13 +554,18 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
             }
             item {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("all" to "همه مکان‌ها", "original" to "زائرسرا", "fatemiyeh" to "فاطمیه", "apartment" to "آپارتمان").forEach { (k, l) ->
+                    listOf("all" to "همه مکان‌ها", "original" to "زائرسرا", "fatemiyeh" to "فاطمیه").forEach { (k, l) ->
                         FilterChip(selected = draftGroup == k, onClick = { draftGroup = k }, label = { Text(l) })
                     }
                 }
             }
             item {
-                Button(onClick = { appliedFrom = draftFrom; appliedTo = draftTo; appliedGroup = draftGroup; generated = true }, modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("all" to "همه خدمات","stay_no_food" to "بدون غذا","stay_with_food" to "با غذا").forEach { (k,l) -> FilterChip(selected=draftService==k,onClick={draftService=k},label={Text(l)}) }
+                }
+            }
+            item {
+                Button(onClick = { appliedFrom = draftFrom; appliedTo = draftTo; appliedGroup = draftGroup; appliedService=draftService; generated = true }, modifier = Modifier.fillMaxWidth()) {
                     Text("نمایش گزارش")
                 }
             }
@@ -540,6 +574,8 @@ fun ReportsScreen(vm: AppViewModel, onBack: () -> Unit) {
                 item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("رزرو", bookings.toString(), Modifier.weight(1f)); MetricCard("نفر", guests.toString(), Modifier.weight(1f)) } }
                 item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MetricCard("مبلغ کل", formatMoney(revenue), Modifier.weight(1f)); MetricCard("وصول", formatMoney(received), Modifier.weight(1f)) } }
                 item { MetricCard("بدهی", formatMoney(debt), Modifier.fillMaxWidth()) }
+                item { Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){MetricCard("صبحانه",filtered.sumOf{it.breakfastCount}.toString(),Modifier.weight(1f));MetricCard("ناهار",filtered.sumOf{it.lunchCount}.toString(),Modifier.weight(1f));MetricCard("شام",filtered.sumOf{it.dinnerCount}.toString(),Modifier.weight(1f))} }
+                item { Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedButton(onClick={ReportExport.shareExcelCsv(context,filtered)},modifier=Modifier.weight(1f)){Icon(Icons.Default.TableChart,null);Spacer(Modifier.width(5.dp));Text("Excel")};OutlinedButton(onClick={ReportExport.sharePdf(context,filtered)},modifier=Modifier.weight(1f)){Icon(Icons.Default.PictureAsPdf,null);Spacer(Modifier.width(5.dp));Text("PDF")}} }
                 item { Text("گزارش مکانی", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
                 val locationRows = units.map { u -> u to filtered.filter { it.unitId == u.id } }.filter { it.second.isNotEmpty() }
                 if (locationRows.isEmpty()) item { EmptyCard("در این بازه گزارشی وجود ندارد.") }
@@ -573,25 +609,26 @@ fun UnitsScreen(vm: AppViewModel, onBack: () -> Unit) {
     val units by vm.units.collectAsState()
     Scaffold(containerColor = Navy, topBar = { DarkTopBar("واحدها", onBack) }) { p ->
         LazyColumn(Modifier.padding(p).fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
-            item { InfoCard("واحدها", "ظرفیت‌ها ثابت و فقط نمایشی هستند. آپارتمان‌ها محدودیت تعداد نفر ندارند.") }
-            items(units) { u -> Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(20.dp)){ Row(Modifier.fillMaxWidth().padding(16.dp),horizontalArrangement=Arrangement.SpaceBetween){ Column{Text(u.name,fontWeight=FontWeight.Bold);Text(groupName(u.unitGroup),color=PurpleSoft)}; Text(if(u.unitGroup=="apartment") "بدون محدودیت" else "${u.capacity} نفر",color=Mint,fontWeight=FontWeight.Bold) } } }
+            item { InfoCard("واحدها", "واحدهای این سامانه فقط شامل زائرسرا و فاطمیه هستند.") }
+            items(units) { u -> Card(colors=CardDefaults.cardColors(containerColor=NavyCard),shape=RoundedCornerShape(20.dp)){ Row(Modifier.fillMaxWidth().padding(16.dp),horizontalArrangement=Arrangement.SpaceBetween){ Column{Text(u.name,fontWeight=FontWeight.Bold);Text(groupName(u.unitGroup),color=PurpleSoft)}; Text("${u.capacity} نفر",color=Mint,fontWeight=FontWeight.Bold) } } }
         }
     }
 }
 
 @Composable
 fun PeopleScreen(vm: AppViewModel, onBack: () -> Unit) {
-    var mode by remember { mutableStateOf("national") }
+    var mode by remember { mutableStateOf("name") }
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<PersonLookup>>(emptyList()) }
     var searched by remember { mutableStateOf(false) }
-    val label = when (mode) { "phone" -> "شماره موبایل"; "last_name" -> "نام خانوادگی"; else -> "کد ملی" }
+    val label = when (mode) { "phone" -> "شماره موبایل"; "last_name" -> "نام خانوادگی"; "name" -> "نام فرد"; else -> "کد ملی" }
 
     Scaffold(containerColor = Navy, topBar = { DarkTopBar("سوابق زائر", onBack) }) { p ->
         LazyColumn(Modifier.padding(p).fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { InfoCard("جستجوی سابقه", "با کد ملی، شماره موبایل یا بخشی از نام خانوادگی جست‌وجو کنید.") }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = mode == "name", onClick = { mode = "name"; query = ""; results = emptyList() }, label = { Text("نام") })
                     FilterChip(selected = mode == "national", onClick = { mode = "national"; query = ""; results = emptyList() }, label = { Text("کد ملی") })
                     FilterChip(selected = mode == "phone", onClick = { mode = "phone"; query = ""; results = emptyList() }, label = { Text("موبایل") })
                     FilterChip(selected = mode == "last_name", onClick = { mode = "last_name"; query = ""; results = emptyList() }, label = { Text("نام خانوادگی") })
@@ -600,7 +637,7 @@ fun PeopleScreen(vm: AppViewModel, onBack: () -> Unit) {
             item {
                 OutlinedTextField(
                     query,
-                    { query = if (mode == "last_name") it else normalizeNumeric(it, if (mode == "national") 10 else 11) },
+                    { query = if (mode == "last_name" || mode == "name") it else normalizeNumeric(it, if (mode == "national") 10 else 11) },
                     label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = true
                 )
             }
@@ -608,20 +645,34 @@ fun PeopleScreen(vm: AppViewModel, onBack: () -> Unit) {
             item { Button(onClick = { searched = true; vm.searchPeople(mode, query) { results = it } }, enabled = valid, modifier = Modifier.fillMaxWidth()) { Text("جست‌وجو") } }
             if (searched && results.isEmpty()) item { EmptyCard("سابقه‌ای پیدا نشد.") }
             items(results) { person ->
+                var showNotes by remember(person.id){ mutableStateOf(false) }
                 Card(colors = CardDefaults.cardColors(containerColor = NavyCard), shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text("${person.firstName} ${person.lastName}", fontWeight = FontWeight.Bold)
                         if (person.phone.isNotBlank()) Text("موبایل: ${person.phone}")
                         if (person.nationalId.isNotBlank() && person.nationalId != "null") Text("کد ملی: ${person.nationalId}")
                         Text("تعداد اقامت: ${person.visitCount}", color = PurpleSoft)
-                        if (person.lastDeparture.isNotBlank() && person.lastDeparture != "null") {
-                            Text("آخرین خروج: ${runCatching { JalaliCalendar.isoToJalali(person.lastDeparture) }.getOrDefault(person.lastDeparture)}", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                        if(person.disciplineNotes.isNotBlank()) Text("بی‌انضباطی/هشدار: ${person.disciplineNotes}",color=Pink,fontWeight=FontWeight.Medium)
+                        if(person.personalNotes.isNotBlank()) Text("توضیحات: ${person.personalNotes}",style=MaterialTheme.typography.bodySmall,color=TextMuted)
+                        if (person.stays.isNotEmpty()) {
+                            HorizontalDivider(color=Color.White.copy(alpha=.08f))
+                            Text("تاریخچه اقامت",fontWeight=FontWeight.Medium,color=PurpleSoft)
+                            person.stays.take(5).forEach { st -> Text("${runCatching{JalaliCalendar.isoToJalali(st.startDate)}.getOrDefault(st.startDate)} تا ${runCatching{JalaliCalendar.isoToJalali(st.endDate)}.getOrDefault(st.endDate)} • ${st.unitName}",style=MaterialTheme.typography.bodySmall,color=TextMuted) }
                         }
+                        if(person.id.isNotBlank() && !person.id.startsWith("family:")) OutlinedButton(onClick={showNotes=true},modifier=Modifier.fillMaxWidth()){Text("ثبت/ویرایش توضیحات فردی")}
                     }
                 }
+                if(showNotes) PersonNotesDialog(vm,person,{showNotes=false}){ updated -> results=results.map{if(it.id==person.id) updated else it};showNotes=false }
             }
         }
     }
+}
+
+@Composable
+private fun PersonNotesDialog(vm:AppViewModel,person:PersonLookup,onDismiss:()->Unit,onSaved:(PersonLookup)->Unit){
+    var personal by remember(person.id){mutableStateOf(person.personalNotes)}
+    var discipline by remember(person.id){mutableStateOf(person.disciplineNotes)}
+    AlertDialog(onDismissRequest=onDismiss,title={Text("توضیحات ${person.firstName} ${person.lastName}")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){OutlinedTextField(personal,{personal=it},label={Text("توضیحات فردی")},modifier=Modifier.fillMaxWidth(),minLines=3);OutlinedTextField(discipline,{discipline=it},label={Text("بی‌انضباطی / هشدار")},modifier=Modifier.fillMaxWidth(),minLines=3)}},confirmButton={Button(onClick={vm.updatePersonNotes(person.id,personal,discipline){onSaved(person.copy(personalNotes=personal,disciplineNotes=discipline))}}){Text("ذخیره")}},dismissButton={TextButton(onClick=onDismiss){Text("انصراف")}})
 }
 
 @Composable
@@ -652,8 +703,8 @@ fun TodayScreen(vm:AppViewModel,initialMode:String,onBack:()->Unit,onDetail:(Str
         "arrivals"->rs.filter{it.startDate==today.toString()}
         "departures"->rs.filter{it.endDate==today.toString()}
         "present"->rs.filter{(it.checkInAt.isNotBlank()&&it.checkInAt!="null"&&(it.checkOutAt.isBlank()||it.checkOutAt=="null"))||dateActive(it)}
-        "occupied"->rs.filter(::dateActive)
-        "active"->rs
+        "occupied"->rs.filter{dateActive(it)&&(it.checkOutAt.isBlank()||it.checkOutAt=="null")}
+        "active"->rs.filter{(it.checkOutAt.isBlank()||it.checkOutAt=="null")&&runCatching{!LocalDate.parse(it.endDate).isBefore(today)}.getOrDefault(true)}
         else->rs.filter{it.startDate==today.toString()||it.endDate==today.toString()||dateActive(it)}
     }
     val groups=filtered.groupBy{it.bookingGroupId.ifBlank{it.id}}.values.sortedBy{it.minOfOrNull{r->r.startDate}}
@@ -725,5 +776,10 @@ fun PersianDateDialog(initial:LocalDate,minDate:LocalDate,title:String,onDismiss
 @Composable private fun EmptyCard(text:String)=Card(Modifier.fillMaxWidth(),colors=CardDefaults.cardColors(containerColor=NavyCard2),shape=RoundedCornerShape(20.dp)){Text(text,Modifier.padding(16.dp),style=MaterialTheme.typography.bodyMedium,color=TextMuted)}
 @Composable private fun StepHeader(number:String,title:String,subtitle:String)=Row(verticalAlignment=Alignment.CenterVertically){Surface(shape=CircleShape,color=Purple){Text(number,Modifier.padding(horizontal=11.dp,vertical=6.dp),color=Color.White,fontWeight=FontWeight.Bold)};Spacer(Modifier.width(10.dp));Column{Text(title,style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold);Text(subtitle,style=MaterialTheme.typography.bodySmall,color=TextMuted)}}
 @Composable private fun SuggestionBadge(text:String)=Surface(shape=RoundedCornerShape(99.dp),color=Gold.copy(alpha=.18f)){Text(text,Modifier.padding(horizontal=9.dp,vertical=4.dp),style=MaterialTheme.typography.labelSmall,color=Gold)}
-private fun groupName(group:String)=when(group){"fatemiyeh"->"فاطمیه";"apartment"->"آپارتمان‌ها";else->"زائرسرا"}
+private fun groupName(group:String)=when(group){"fatemiyeh"->"فاطمیه";else->"زائرسرا"}
+private fun serviceTypeLabel(v:String)=when(v){"stay_with_food"->"اقامت با غذا";"food_only"->"غذا بدون اقامت";else->"اقامت بدون غذا"}
+private fun paymentKindLabel(v:String)=when(v){"paid"->"پرداخت وجه";"gift"->"هدیه";else->"رایگان"}
+private fun roomGenderLabel(v:String)=when(v){"male"->"آقایان";"female"->"بانوان";"mixed"->"ترکیبی";else->"خانوادگی"}
+private fun formatServerTime(v:String):String=runCatching{java.time.OffsetDateTime.parse(v).toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))}.getOrElse{v.take(5)}
+private fun formatServerDateTime(v:String):String=runCatching{val d=java.time.OffsetDateTime.parse(v);"${JalaliCalendar.fromGregorian(d.toLocalDate()).display()} • ${d.toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))}"}.getOrElse{v}
 private fun formatMoney(v:Long):String=String.format("%,d",v)

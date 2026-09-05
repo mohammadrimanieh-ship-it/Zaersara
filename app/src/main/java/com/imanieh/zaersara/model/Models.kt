@@ -16,7 +16,17 @@ data class PersonLookup(
     val nationalId: String,
     val phone: String = "",
     val visitCount: Int = 0,
-    val lastDeparture: String = ""
+    val lastDeparture: String = "",
+    val personalNotes: String = "",
+    val disciplineNotes: String = "",
+    val stays: List<PersonStay> = emptyList()
+)
+
+data class PersonStay(
+    val startDate: String = "",
+    val endDate: String = "",
+    val unitName: String = "",
+    val family: String = ""
 )
 
 data class Reservation(
@@ -38,11 +48,36 @@ data class Reservation(
     val paymentStatus: String = "رایگان",
     val notes: String = "",
     val checkInAt: String = "",
-    val checkOutAt: String = ""
+    val checkOutAt: String = "",
+    val registeredAt: String = "",
+    val extraCapacity: Int = 0,
+    val roomGender: String = "family",
+    val mahramNotes: String = "",
+    val serviceType: String = "stay_no_food",
+    val breakfastCount: Int = 0,
+    val lunchCount: Int = 0,
+    val dinnerCount: Int = 0,
+    val paymentKind: String = "free",
+    val giftDescription: String = ""
 )
 
 data class GuestInput(val firstName: String, val lastName: String, val nationalId: String = "", val phone: String = "")
-data class PlanUnit(val unitId: String, val guestCount: Int, val familyLastName: String = "", val guests: List<GuestInput> = emptyList())
+
+data class PlanUnit(
+    val unitId: String,
+    val guestCount: Int,
+    val familyLastName: String = "",
+    val guests: List<GuestInput> = emptyList(),
+    val extraCapacity: Int = 0,
+    val roomGender: String = "family",
+    val mahramNotes: String = "",
+    val serviceType: String = "stay_no_food",
+    val breakfastCount: Int = 0,
+    val lunchCount: Int = 0,
+    val dinnerCount: Int = 0,
+    val paymentKind: String = "free",
+    val giftDescription: String = ""
+)
 
 data class UnitSuggestion(
     val group: String,
