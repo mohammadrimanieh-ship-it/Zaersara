@@ -262,6 +262,8 @@ private fun BookingCard(rows: List<Reservation>, onClick: () -> Unit) {
                 Surface(shape = RoundedCornerShape(14.dp), color = Purple.copy(alpha=.16f)) { Text("$totalGuests نفر", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), color = PurpleSoft) }
             }
             Text("ورود: ${JalaliCalendar.isoToJalali(first.startDate)}   •   خروج: ${JalaliCalendar.isoToJalali(first.endDate)}", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+            val hasFood = rows.any { it.serviceType == "stay_with_food" }
+            Text(if (hasFood) "🍽 اقامت با غذا" else "اقامت بدون غذا", style = MaterialTheme.typography.bodySmall, color = if (hasFood) Gold else TextMuted, fontWeight = FontWeight.Medium)
             if(first.checkInAt.isNotBlank() && first.checkInAt!="null") Text("ساعت ورود: ${formatServerTime(first.checkInAt)}${if(first.checkOutAt.isNotBlank()&&first.checkOutAt!="null") " • ساعت خروج: ${formatServerTime(first.checkOutAt)}" else ""}",style=MaterialTheme.typography.bodySmall,color=Mint)
             if (rows.size > 1) Text("${rows.size} واحد در یک مجموعه", style = MaterialTheme.typography.labelMedium, color = Gold)
         }
@@ -287,6 +289,15 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
     var paymentKind by remember { mutableStateOf("free") }; var giftDescription by remember { mutableStateOf("") }
     val people = peopleText.toIntOrNull() ?: 0
     val dateOk = startDate != null && endDate != null && endDate!!.isAfter(startDate!!)
+    LaunchedEffect(serviceType, startDate, endDate, people) {
+        if (serviceType == "stay_with_food" && dateOk && people > 0) {
+            val days = java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate).toInt().coerceAtLeast(1)
+            val autoMeals = (days * people).toString()
+            breakfast = autoMeals; lunch = autoMeals; dinner = autoMeals
+        } else if (serviceType == "stay_no_food") {
+            breakfast = "0"; lunch = "0"; dinner = "0"
+        }
+    }
     val suggestions = remember(startDate,endDate,people,caravan,allowExtraCapacity,searched,units,rs) { if (searched && dateOk && people>0) vm.suggestions(startDate!!,endDate!!,people,caravan,allowExtraCapacity) else emptyList() }
     val cap = remember(startDate,endDate,units,rs,searched) { if (searched && dateOk) vm.availableCapacityByGroup(startDate!!,endDate!!) else emptyMap() }
 
@@ -348,14 +359,25 @@ fun NewReservationScreen(vm: AppViewModel, onDone: () -> Unit) {
                 item { OutlinedTextField(phone,{phone=normalizeNumeric(it,11)},label={Text("شماره موبایل سرپرست (اختیاری)")},modifier=Modifier.fillMaxWidth(),singleLine=true) }
                 item { Text("نوع خدمت",fontWeight=FontWeight.Bold) }
                 item { Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("stay_no_food" to "اقامت بدون غذا","stay_with_food" to "اقامت با غذا").forEach{(k,l)->FilterChip(selected=serviceType==k,onClick={serviceType=k},label={Text(l)})}} }
-                if(serviceType=="stay_with_food") item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)){ Text("تعداد وعده‌ها",fontWeight=FontWeight.Medium); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedTextField(breakfast,{breakfast=normalizeNumeric(it,3)},label={Text("صبحانه")},modifier=Modifier.weight(1f),singleLine=true);OutlinedTextField(lunch,{lunch=normalizeNumeric(it,3)},label={Text("ناهار")},modifier=Modifier.weight(1f),singleLine=true);OutlinedTextField(dinner,{dinner=normalizeNumeric(it,3)},label={Text("شام")},modifier=Modifier.weight(1f),singleLine=true)}; Text("تعداد هر وعده می‌تواند بیشتر از تعداد اقامت‌کنندگان باشد.",style=MaterialTheme.typography.bodySmall,color=TextMuted) } }
+                if(serviceType=="stay_with_food") item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)){ Text("تعداد وعده‌ها",fontWeight=FontWeight.Medium); Text("بر اساس تعداد نفرات و روزهای اقامت خودکار محاسبه شده و هر وعده جداگانه قابل ویرایش است.",style=MaterialTheme.typography.bodySmall,color=TextMuted); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){OutlinedTextField(breakfast,{breakfast=normalizeNumeric(it,4)},label={Text("صبحانه")},modifier=Modifier.weight(1f),singleLine=true);OutlinedTextField(lunch,{lunch=normalizeNumeric(it,4)},label={Text("ناهار")},modifier=Modifier.weight(1f),singleLine=true);OutlinedTextField(dinner,{dinner=normalizeNumeric(it,4)},label={Text("شام")},modifier=Modifier.weight(1f),singleLine=true)} } }
                 item { Text("وضعیت مالی",fontWeight=FontWeight.Bold) }
                 item { Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(6.dp)){listOf("free" to "رایگان","paid" to "پرداخت وجه","gift" to "هدیه").forEach{(k,l)->FilterChip(selected=paymentKind==k,onClick={paymentKind=k;paid=k=="paid"},label={Text(l)})}} }
                 if (paymentKind=="paid") item { Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedTextField(amount,{amount=normalizeNumeric(it)},label={Text("مبلغ کل (تومان)")},modifier=Modifier.fillMaxWidth(),singleLine=true); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { FilterChip(selected=paymentStatus=="پرداخت شده",onClick={paymentStatus="پرداخت شده"},label={Text("پرداخت شده")}); FilterChip(selected=paymentStatus=="بدهکار",onClick={paymentStatus="بدهکار"},label={Text("بدهکار")}) } } }
                 if(paymentKind=="gift") item { OutlinedTextField(giftDescription,{giftDescription=it},label={Text("توضیح هدیه")},modifier=Modifier.fillMaxWidth(),minLines=2) }
                 item { OutlinedTextField(notes,{notes=it},label={Text("توضیحات")},modifier=Modifier.fillMaxWidth(),minLines=2) }
                 val s=selected!!
-                val plan=s.units.map { u -> PlanUnit(u.id, allocationTexts[u.id]?.toIntOrNull() ?: 0, familyNames[u.id].orEmpty().trim(), unitGuests[u.id] ?: emptyList(), extraCaps[u.id]?.toIntOrNull()?:0, roomGenders[u.id]?:"family", mahramNotes[u.id].orEmpty(), serviceType, breakfast.toIntOrNull()?:0, lunch.toIntOrNull()?:0, dinner.toIntOrNull()?:0, paymentKind, giftDescription.trim()) }
+                val guestAllocations = s.units.map { allocationTexts[it.id]?.toIntOrNull() ?: 0 }
+                fun distributeMeal(total: Int): List<Int> {
+                    val guestTotal = guestAllocations.sum().coerceAtLeast(1)
+                    val base = guestAllocations.map { (total.toLong() * it / guestTotal).toInt() }.toMutableList()
+                    var remainder = total - base.sum(); var i = 0
+                    while (remainder > 0 && base.isNotEmpty()) { base[i % base.size]++; remainder--; i++ }
+                    return base
+                }
+                val breakfasts = distributeMeal(if(serviceType=="stay_with_food") breakfast.toIntOrNull()?:0 else 0)
+                val lunches = distributeMeal(if(serviceType=="stay_with_food") lunch.toIntOrNull()?:0 else 0)
+                val dinners = distributeMeal(if(serviceType=="stay_with_food") dinner.toIntOrNull()?:0 else 0)
+                val plan=s.units.mapIndexed { index, u -> PlanUnit(u.id, guestAllocations[index], familyNames[u.id].orEmpty().trim(), unitGuests[u.id] ?: emptyList(), extraCaps[u.id]?.toIntOrNull()?:0, roomGenders[u.id]?:"family", mahramNotes[u.id].orEmpty(), serviceType, breakfasts[index], lunches[index], dinners[index], paymentKind, giftDescription.trim()) }
                 val namesOk=plan.all{it.familyLastName.isNotBlank()}; val countsOk=plan.all { p0 -> p0.guestCount>0 && p0.guestCount<=s.units.first{it.id==p0.unitId}.capacity+p0.extraCapacity }
                 val totalOk=plan.sumOf{it.guestCount}==people; val amountOk=paymentKind!="paid" || (amount.toLongOrNull()?:0)>0
                 item {
